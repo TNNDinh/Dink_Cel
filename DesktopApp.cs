@@ -1,0 +1,1737 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Windows.Forms;
+using System.Xml.Linq;
+
+namespace DinkCel
+{
+    internal static class Program
+    {
+        [STAThread]
+        private static void Main(string[] args)
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new SpreadsheetForm(args.Length > 0 ? args[0] : null));
+        }
+    }
+
+    internal sealed class SmoothGrid : DataGridView
+    {
+        public SmoothGrid()
+        {
+            DoubleBuffered = true;
+        }
+    }
+
+    internal sealed class CellSnapshot
+    {
+        public string Text = "";
+        public FontStyle FontStyle = FontStyle.Regular;
+        public float FontSize = 10F;
+        public Color ForeColor = Color.Empty;
+        public Color BackColor = Color.Empty;
+        public DataGridViewContentAlignment Alignment = DataGridViewContentAlignment.NotSet;
+        public bool HasFont;
+    }
+
+    internal sealed class WorkbookSnapshot
+    {
+        public readonly Dictionary<int, CellSnapshot> Cells =
+            new Dictionary<int, CellSnapshot>();
+        public Color Background = Color.FromArgb(232, 240, 248);
+        public bool HasBackground;
+        public string ThemeId;
+    }
+
+    internal sealed class SheetState
+    {
+        public readonly Dictionary<int, CellState> Cells =
+            new Dictionary<int, CellState>();
+        public readonly int[] RowHeights = new int[200];
+        public readonly int[] ColumnWidths = new int[26];
+        public Color Background;
+        public string ThemeId;
+        public int CsvRows;
+        public int CsvColumns;
+        public long RevisionId;
+    }
+
+    internal sealed class CellState
+    {
+        public object Value;
+        public DataGridViewCellStyle Style;
+    }
+
+    internal sealed class SpreadsheetForm : Form
+    {
+        private const int RowCount = 200;
+        private const int ColumnCount = 26;
+        private static readonly Font HeaderFont = new Font("Arial", 9F);
+
+        private readonly SmoothGrid grid = new SmoothGrid();
+        private readonly Panel headerPanel = new Panel();
+        private readonly Label logo = new Label();
+        private readonly Label subtitle = new Label();
+        private readonly MenuStrip menu = new MenuStrip();
+        private readonly ContextMenuStrip rowContext = new ContextMenuStrip();
+        private readonly ContextMenuStrip columnContext = new ContextMenuStrip();
+        private readonly ToolStrip toolbar = new ToolStrip();
+        private readonly TableLayoutPanel formulaPanel = new TableLayoutPanel();
+        private readonly Label fx = new Label();
+        private readonly Panel footerPanel = new Panel();
+        private readonly Label sheetTab = new Label();
+        private readonly ToolStripLabel themeSwatch = new ToolStripLabel("●");
+        private readonly TextBox addressBox = new TextBox();
+        private readonly TextBox contentBox = new TextBox();
+        private readonly Label documentTitle = new Label();
+        private readonly Label saveIndicator = new Label();
+        private readonly Label status = new Label();
+        private readonly ToolStripComboBox sizeCombo = new ToolStripComboBox();
+        private readonly ToolStripButton boldButton = new ToolStripButton("B");
+        private readonly ToolStripButton italicButton = new ToolStripButton("I");
+        private readonly ToolStripButton underlineButton = new ToolStripButton("U");
+        private readonly Dictionary<int, string> calculated =
+            new Dictionary<int, string>();
+        private readonly List<SheetState> undoHistory = new List<SheetState>();
+        private readonly List<SheetState> redoHistory = new List<SheetState>();
+        private SheetState lastState;
+        private long nextRevision;
+        private long savedRevision;
+
+        private string currentPath;
+        private CsvDocument csvDocument;
+        private ThemePalette theme;
+        private Color sheetBackground;
+        private bool dirty;
+        private bool loading;
+        private bool syncingContent;
+        private bool syncingToolbar;
+        private bool selectingHeader;
+        private bool fillDragging;
+        private int fillSourceRow;
+        private int fillSourceColumn;
+        private int fillTargetRow;
+        private int fillTargetColumn;
+
+        public SpreadsheetForm(string startupPath)
+        {
+            Text = "DinkCel";
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            Width = 1380;
+            Height = 860;
+            MinimumSize = new Size(800, 500);
+            WindowState = FormWindowState.Maximized;
+            StartPosition = FormStartPosition.CenterScreen;
+            Font = new Font("Segoe UI", 10F);
+            theme = LoadThemePreference();
+            sheetBackground = theme.Sheet;
+            BackColor = theme.Surface;
+
+            loading = true;
+            BuildInterface();
+            BuildGrid();
+            loading = false;
+            dirty = false;
+            ApplyTheme(theme, false, false);
+            Recalculate();
+            UpdateTitle();
+            UpdateSelection();
+            ResetHistory();
+
+            FormClosing += delegate(object sender, FormClosingEventArgs e)
+            {
+                if (!ConfirmDiscardChanges())
+                    e.Cancel = true;
+            };
+            Shown += delegate
+            {
+                if (!string.IsNullOrEmpty(startupPath))
+                    OpenPath(startupPath);
+                grid.Focus();
+            };
+        }
+
+        private void BuildInterface()
+        {
+            var layout = new TableLayoutPanel();
+            layout.Dock = DockStyle.Fill;
+            layout.Margin = Padding.Empty;
+            layout.Padding = Padding.Empty;
+            layout.ColumnCount = 1;
+            layout.RowCount = 6;
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            Controls.Add(layout);
+
+            Panel header = headerPanel;
+            header.Dock = DockStyle.Fill;
+            header.BackColor = theme.Chrome;
+            logo.Text = "D";
+            logo.Font = new Font("Segoe UI", 17F, FontStyle.Bold);
+            logo.ForeColor = Color.White;
+            logo.BackColor = theme.Logo;
+            logo.TextAlign = ContentAlignment.MiddleCenter;
+            logo.Bounds = new Rectangle(18, 14, 36, 36);
+            header.Controls.Add(logo);
+            documentTitle.Font = new Font("Segoe UI", 16F, FontStyle.Bold);
+            documentTitle.ForeColor = theme.Text;
+            documentTitle.Location = new Point(68, 7);
+            documentTitle.Size = new Size(650, 31);
+            header.Controls.Add(documentTitle);
+            subtitle.Text = "DinkCel  •  Bảng tính trên máy";
+            subtitle.Font = new Font("Segoe UI", 8.5F);
+            subtitle.ForeColor = theme.Muted;
+            subtitle.Location = new Point(69, 37);
+            subtitle.Size = new Size(400, 20);
+            header.Controls.Add(subtitle);
+            saveIndicator.TextAlign = ContentAlignment.MiddleRight;
+            saveIndicator.ForeColor = theme.Muted;
+            saveIndicator.Bounds = new Rectangle(900, 20, 350, 25);
+            header.Controls.Add(saveIndicator);
+            header.Resize += delegate
+            {
+                saveIndicator.Left = header.ClientSize.Width - saveIndicator.Width - 18;
+                documentTitle.Width = Math.Max(200, saveIndicator.Left - documentTitle.Left - 12);
+            };
+            layout.Controls.Add(header, 0, 0);
+
+            menu.Dock = DockStyle.Fill;
+            menu.GripStyle = ToolStripGripStyle.Hidden;
+            menu.BackColor = theme.Chrome;
+            menu.ForeColor = theme.Text;
+            menu.Font = new Font("Segoe UI", 10F);
+            menu.Padding = new Padding(60, 0, 0, 0);
+            var fileMenu = new ToolStripMenuItem("Tệp");
+            AddMenuItem(fileMenu, "Mới", Keys.Control | Keys.N, NewDocument);
+            AddMenuItem(fileMenu, "Mở...", Keys.Control | Keys.O, OpenDocument);
+            fileMenu.DropDownItems.Add(new ToolStripSeparator());
+            AddMenuItem(fileMenu, "Lưu", Keys.Control | Keys.S, delegate { SaveDocument(); });
+            AddMenuItem(fileMenu, "Lưu thành...", Keys.None, delegate { SaveDocumentAs(); });
+            menu.Items.Add(fileMenu);
+            var editMenu = new ToolStripMenuItem("Chỉnh sửa");
+            AddMenuItem(editMenu, "Sao chép", Keys.Control | Keys.C, CopySelected);
+            AddMenuItem(editMenu, "Dán", Keys.Control | Keys.V, PasteSelected);
+            AddMenuItem(editMenu, "Hoàn tác", Keys.Control | Keys.Z, Undo);
+            AddMenuItem(editMenu, "Làm lại", Keys.Control | Keys.Y, Redo);
+            AddMenuItem(editMenu, "Xóa nội dung ô đã chọn", Keys.None, ClearSelectedCells);
+            editMenu.DropDownItems.Add(new ToolStripSeparator());
+            AddMenuItem(editMenu, "Chèn hàng phía trên", Keys.None, InsertRow);
+            AddMenuItem(editMenu, "Xóa hàng", Keys.None, DeleteRow);
+            AddMenuItem(editMenu, "Chèn cột bên trái", Keys.None, InsertColumn);
+            AddMenuItem(editMenu, "Xóa cột", Keys.None, DeleteColumn);
+            menu.Items.Add(editMenu);
+            var formatMenu = new ToolStripMenuItem("Định dạng");
+            AddMenuItem(formatMenu, "In đậm", Keys.Control | Keys.B,
+                delegate { ToggleFontStyle(FontStyle.Bold); });
+            AddMenuItem(formatMenu, "In nghiêng", Keys.Control | Keys.I,
+                delegate { ToggleFontStyle(FontStyle.Italic); });
+            AddMenuItem(formatMenu, "Gạch chân", Keys.Control | Keys.U,
+                delegate { ToggleFontStyle(FontStyle.Underline); });
+            menu.Items.Add(formatMenu);
+            var viewMenu = new ToolStripMenuItem("Xem");
+            AddMenuItem(viewMenu, "Đổi giao diện...", Keys.None, ChooseTheme);
+            menu.Items.Add(viewMenu);
+            MainMenuStrip = menu;
+            layout.Controls.Add(menu, 0, 1);
+
+            toolbar.Dock = DockStyle.Fill;
+            toolbar.GripStyle = ToolStripGripStyle.Hidden;
+            toolbar.BackColor = theme.Chrome;
+            toolbar.ForeColor = theme.Text;
+            toolbar.Font = new Font("Segoe UI", 10F);
+            toolbar.Padding = new Padding(14, 6, 8, 6);
+            toolbar.RenderMode = ToolStripRenderMode.System;
+            AddToolbarButton(toolbar, "Mở", "Mở bảng tính", OpenDocument);
+            AddToolbarButton(toolbar, "Lưu", "Lưu bảng tính", delegate { SaveDocument(); });
+            toolbar.Items.Add(new ToolStripSeparator());
+            AddToolbarButton(toolbar, "Sao chép", "Sao chép ô đã chọn", CopySelected);
+            AddToolbarButton(toolbar, "Dán", "Dán từ bộ nhớ tạm", PasteSelected);
+            toolbar.Items.Add(new ToolStripSeparator());
+            toolbar.Items.Add(new ToolStripLabel("Cỡ chữ"));
+            sizeCombo.AutoSize = false;
+            sizeCombo.Width = 55;
+            sizeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+            sizeCombo.Items.AddRange(new object[] { "9", "10", "11", "12", "14", "16", "18", "24" });
+            sizeCombo.SelectedIndexChanged += delegate
+            {
+                if (syncingToolbar)
+                    return;
+                float size;
+                if (float.TryParse(sizeCombo.Text, NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out size))
+                    ApplyFontSize(size);
+            };
+            toolbar.Items.Add(sizeCombo);
+            toolbar.Items.Add(new ToolStripSeparator());
+            boldButton.Font = new Font("Arial", 10F, FontStyle.Bold);
+            boldButton.ToolTipText = "In đậm";
+            boldButton.Click += delegate { ToggleFontStyle(FontStyle.Bold); };
+            toolbar.Items.Add(boldButton);
+            italicButton.Font = new Font("Arial", 10F, FontStyle.Italic);
+            italicButton.ToolTipText = "In nghiêng";
+            italicButton.Click += delegate { ToggleFontStyle(FontStyle.Italic); };
+            toolbar.Items.Add(italicButton);
+            underlineButton.Font = new Font("Arial", 10F, FontStyle.Underline);
+            underlineButton.ToolTipText = "Gạch chân";
+            underlineButton.Click += delegate { ToggleFontStyle(FontStyle.Underline); };
+            toolbar.Items.Add(underlineButton);
+            toolbar.Items.Add(new ToolStripSeparator());
+            AddToolbarButton(toolbar, "Màu chữ", "Chọn màu chữ", delegate { ChooseColor(false); });
+            AddToolbarButton(toolbar, "Màu nền", "Chọn màu nền ô", delegate { ChooseColor(true); });
+            toolbar.Items.Add(new ToolStripSeparator());
+            AddToolbarButton(toolbar, "Trái", "Căn trái", delegate
+            {
+                ApplyAlignment(DataGridViewContentAlignment.MiddleLeft);
+            });
+            AddToolbarButton(toolbar, "Giữa", "Căn giữa", delegate
+            {
+                ApplyAlignment(DataGridViewContentAlignment.MiddleCenter);
+            });
+            AddToolbarButton(toolbar, "Phải", "Căn phải", delegate
+            {
+                ApplyAlignment(DataGridViewContentAlignment.MiddleRight);
+            });
+            toolbar.Items.Add(new ToolStripSeparator());
+            themeSwatch.ForeColor = theme.Accent;
+            themeSwatch.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
+            toolbar.Items.Add(themeSwatch);
+            AddToolbarButton(toolbar, "Giao diện", "Chọn màu toàn bộ giao diện", ChooseTheme);
+            layout.Controls.Add(toolbar, 0, 2);
+
+            TableLayoutPanel formula = formulaPanel;
+            formula.Dock = DockStyle.Fill;
+            formula.Margin = Padding.Empty;
+            formula.Padding = new Padding(10, 4, 10, 4);
+            formula.ColumnCount = 3;
+            formula.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
+            formula.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
+            formula.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            formula.BackColor = theme.Sheet;
+            addressBox.ReadOnly = true;
+            addressBox.TabStop = false;
+            addressBox.BorderStyle = BorderStyle.None;
+            addressBox.BackColor = theme.Sheet;
+            addressBox.ForeColor = theme.Text;
+            addressBox.TextAlign = HorizontalAlignment.Center;
+            addressBox.Dock = DockStyle.Fill;
+            addressBox.Font = new Font("Arial", 10F);
+            formula.Controls.Add(addressBox, 0, 0);
+            fx.Text = "fx";
+            fx.ForeColor = theme.Muted;
+            fx.Font = new Font("Georgia", 12F, FontStyle.Italic);
+            fx.TextAlign = ContentAlignment.MiddleCenter;
+            fx.Dock = DockStyle.Fill;
+            formula.Controls.Add(fx, 1, 0);
+            contentBox.BorderStyle = BorderStyle.None;
+            contentBox.Font = new Font("Arial", 10F);
+            contentBox.ForeColor = theme.Text;
+            contentBox.BackColor = theme.Sheet;
+            contentBox.Dock = DockStyle.Fill;
+            contentBox.TextChanged += delegate
+            {
+                if (!syncingContent && grid.CurrentCell != null)
+                    grid.CurrentCell.Value = contentBox.Text;
+            };
+            formula.Controls.Add(contentBox, 2, 0);
+            formula.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(theme.Border))
+                    e.Graphics.DrawLine(pen, 0, formula.Height - 1, formula.Width, formula.Height - 1);
+            };
+            layout.Controls.Add(formula, 0, 3);
+
+            grid.Dock = DockStyle.Fill;
+            grid.Margin = Padding.Empty;
+            grid.BorderStyle = BorderStyle.None;
+            grid.BackgroundColor = theme.Sheet;
+            grid.GridColor = theme.Border;
+            grid.AllowUserToAddRows = false;
+            grid.AllowUserToDeleteRows = false;
+            grid.AllowUserToOrderColumns = false;
+            grid.AllowUserToResizeRows = true;
+            grid.MultiSelect = true;
+            grid.SelectionMode = DataGridViewSelectionMode.CellSelect;
+            grid.RowHeadersWidth = 50;
+            grid.ColumnHeadersHeight = 28;
+            grid.RowTemplate.Height = 27;
+            grid.EnableHeadersVisualStyles = false;
+            grid.Font = new Font("Arial", 10F);
+            grid.DefaultCellStyle.ForeColor = theme.Text;
+            grid.DefaultCellStyle.BackColor = theme.Sheet;
+            grid.DefaultCellStyle.SelectionForeColor = theme.Text;
+            grid.DefaultCellStyle.SelectionBackColor = theme.Selection;
+            grid.ColumnHeadersDefaultCellStyle.BackColor = theme.Header;
+            grid.RowHeadersDefaultCellStyle.BackColor = theme.Header;
+            grid.ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableWithoutHeaderText;
+            grid.CellPainting += GridCellPainting;
+            grid.CellFormatting += GridCellFormatting;
+            grid.EditingControlShowing += GridEditingControlShowing;
+            grid.SelectionChanged += delegate
+            {
+                if (selectingHeader)
+                    return;
+                UpdateSelection();
+                grid.Invalidate();
+            };
+            grid.CellValueChanged += delegate
+            {
+                if (!loading)
+                {
+                    RecordChange();
+                    Recalculate();
+                    MarkDirty();
+                    UpdateSelection();
+                }
+            };
+            grid.KeyDown += GridKeyDown;
+            grid.CellMouseDown += GridCellMouseDown;
+            grid.RowHeaderMouseClick += GridCellMouseClick;
+            grid.ColumnHeaderMouseClick += GridCellMouseClick;
+            grid.CellMouseMove += GridCellMouseMove;
+            grid.MouseMove += GridMouseMove;
+            grid.MouseUp += GridMouseUp;
+            rowContext.Items.Add("Chèn hàng phía trên", null,
+                delegate { InsertRow(); });
+            rowContext.Items.Add("Xóa hàng", null, delegate { DeleteRow(); });
+            columnContext.Items.Add("Chèn cột bên trái", null,
+                delegate { InsertColumn(); });
+            columnContext.Items.Add("Xóa cột", null, delegate { DeleteColumn(); });
+            layout.Controls.Add(grid, 0, 4);
+
+            Panel footer = footerPanel;
+            footer.Dock = DockStyle.Fill;
+            footer.BackColor = theme.Chrome;
+            footer.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(theme.Border))
+                    e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0);
+                using (var pen = new Pen(theme.Accent, 3))
+                    e.Graphics.DrawLine(pen, 52, footer.Height - 2, 172, footer.Height - 2);
+            };
+            Label tab = sheetTab;
+            tab.Text = "▦  Trang tính 1";
+            tab.ForeColor = theme.Accent;
+            tab.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+            tab.TextAlign = ContentAlignment.MiddleCenter;
+            tab.Bounds = new Rectangle(50, 5, 124, 32);
+            footer.Controls.Add(tab);
+            status.ForeColor = theme.Muted;
+            status.TextAlign = ContentAlignment.MiddleRight;
+            status.Bounds = new Rectangle(850, 6, 360, 30);
+            footer.Controls.Add(status);
+            footer.Resize += delegate
+            {
+                status.Left = footer.ClientSize.Width - status.Width - 16;
+            };
+            layout.Controls.Add(footer, 0, 5);
+        }
+
+        private void BuildGrid()
+        {
+            for (int column = 0; column < ColumnCount; column++)
+            {
+                var item = new DataGridViewTextBoxColumn();
+                item.Name = ((char)('A' + column)).ToString();
+                item.HeaderText = item.Name;
+                item.Width = 120;
+                item.SortMode = DataGridViewColumnSortMode.NotSortable;
+                grid.Columns.Add(item);
+            }
+
+            grid.Rows.Add(RowCount);
+            for (int row = 0; row < RowCount; row++)
+                grid.Rows[row].HeaderCell.Value = (row + 1).ToString();
+            grid.CurrentCell = grid[0, 0];
+        }
+
+        private void Recalculate()
+        {
+            calculated.Clear();
+            var engine = new FormulaEngine(delegate(int row, int column)
+            {
+                return Convert.ToString(grid[column, row].Value) ?? "";
+            }, RowCount, ColumnCount);
+            for (int row = 0; row < RowCount; row++)
+            {
+                for (int column = 0; column < ColumnCount; column++)
+                {
+                    string raw = Convert.ToString(grid[column, row].Value) ?? "";
+                    if (raw.StartsWith("=", StringComparison.Ordinal))
+                        calculated[row * ColumnCount + column] =
+                            engine.Display(row, column);
+                }
+            }
+            grid.Invalidate();
+        }
+
+        private void GridCellFormatting(object sender,
+            DataGridViewCellFormattingEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0)
+                return;
+            string result;
+            if (calculated.TryGetValue(e.RowIndex * ColumnCount + e.ColumnIndex,
+                out result))
+            {
+                e.Value = result;
+                e.FormattingApplied = true;
+            }
+        }
+
+        private void GridEditingControlShowing(object sender,
+            DataGridViewEditingControlShowingEventArgs e)
+        {
+            if (grid.CurrentCell == null)
+                return;
+            var editor = e.Control as TextBox;
+            string raw = Convert.ToString(grid.CurrentCell.Value) ?? "";
+            if (editor != null && raw.StartsWith("=", StringComparison.Ordinal))
+                editor.Text = raw;
+        }
+
+        private static string AppearanceSettingsPath()
+        {
+            return Path.Combine(
+                Path.GetDirectoryName(typeof(SpreadsheetForm).Assembly.Location),
+                "appearance.xml");
+        }
+
+        private static ThemePalette LoadThemePreference()
+        {
+            try
+            {
+                string path = AppearanceSettingsPath();
+                if (File.Exists(path))
+                {
+                    var document = XDocument.Load(path);
+                    XAttribute id = document.Root == null
+                        ? null : document.Root.Attribute("theme");
+                    ThemePalette selected = id == null
+                        ? null : ThemePalette.Find(id.Value);
+                    if (selected != null)
+                        return selected;
+                }
+            }
+            catch
+            {
+                // A missing or damaged preference uses the default theme.
+            }
+            return ThemePalette.All[0];
+        }
+
+        private void SaveThemePreference()
+        {
+            try
+            {
+                string path = AppearanceSettingsPath();
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                new XDocument(new XElement("appearance",
+                    new XAttribute("theme", theme.Id))).Save(path);
+            }
+            catch
+            {
+                status.Text = "Đã đổi giao diện; chưa lưu được lựa chọn cho lần sau";
+            }
+        }
+
+        private void ApplyTheme(ThemePalette palette, bool markDirty, bool persist)
+        {
+            theme = palette;
+            BackColor = theme.Surface;
+            headerPanel.BackColor = theme.Chrome;
+            logo.BackColor = theme.Logo;
+            documentTitle.ForeColor = theme.Text;
+            subtitle.ForeColor = theme.Muted;
+            saveIndicator.ForeColor = theme.Muted;
+            menu.BackColor = theme.Chrome;
+            menu.ForeColor = theme.Text;
+            foreach (ToolStripItem item in menu.Items)
+            {
+                item.ForeColor = theme.Text;
+                var parent = item as ToolStripMenuItem;
+                if (parent == null)
+                    continue;
+                parent.DropDown.BackColor = theme.Chrome;
+                foreach (ToolStripItem child in parent.DropDownItems)
+                {
+                    child.BackColor = theme.Chrome;
+                    child.ForeColor = theme.Text;
+                }
+            }
+            foreach (ContextMenuStrip context in new[] { rowContext, columnContext })
+            {
+                context.BackColor = theme.Chrome;
+                context.ForeColor = theme.Text;
+                foreach (ToolStripItem item in context.Items)
+                {
+                    item.BackColor = theme.Chrome;
+                    item.ForeColor = theme.Text;
+                }
+            }
+            toolbar.BackColor = theme.Chrome;
+            toolbar.ForeColor = theme.Text;
+            foreach (ToolStripItem item in toolbar.Items)
+                item.ForeColor = theme.Text;
+            themeSwatch.ForeColor = theme.Accent;
+            sizeCombo.BackColor = theme.Sheet;
+            sizeCombo.ForeColor = theme.Text;
+            fx.ForeColor = theme.Muted;
+            footerPanel.BackColor = theme.Chrome;
+            sheetTab.ForeColor = theme.Accent;
+            status.ForeColor = theme.Muted;
+            ApplySheetBackground(theme.Sheet, false);
+            headerPanel.Invalidate();
+            formulaPanel.Invalidate();
+            footerPanel.Invalidate();
+            if (persist)
+                SaveThemePreference();
+            if (markDirty)
+            {
+                RecordChange();
+                MarkDirty();
+            }
+        }
+
+        private void ApplySheetBackground(Color color, bool markDirty)
+        {
+            sheetBackground = color;
+            bool dark = (color.R * 299 + color.G * 587 + color.B * 114) / 1000 < 150;
+            Color foreground = color.ToArgb() == theme.Sheet.ToArgb()
+                ? theme.Text : dark ? Color.FromArgb(235, 242, 249)
+                    : Color.FromArgb(32, 41, 51);
+            grid.BackgroundColor = color;
+            grid.DefaultCellStyle.BackColor = color;
+            grid.DefaultCellStyle.ForeColor = foreground;
+            grid.DefaultCellStyle.SelectionForeColor = foreground;
+            grid.DefaultCellStyle.SelectionBackColor =
+                color.ToArgb() == theme.Sheet.ToArgb() ? theme.Selection
+                : dark ? Color.FromArgb(60, 80, 105)
+                    : Color.FromArgb(211, 227, 244);
+            grid.GridColor = color.ToArgb() == theme.Sheet.ToArgb()
+                ? theme.Border : dark ? Color.FromArgb(78, 92, 108)
+                    : Color.FromArgb(198, 209, 221);
+            grid.ColumnHeadersDefaultCellStyle.BackColor = theme.Header;
+            grid.RowHeadersDefaultCellStyle.BackColor = theme.Header;
+            formulaPanel.BackColor = color;
+            addressBox.BackColor = color;
+            addressBox.ForeColor = foreground;
+            contentBox.BackColor = color;
+            contentBox.ForeColor = foreground;
+            grid.Invalidate();
+            if (markDirty)
+            {
+                RecordChange();
+                MarkDirty();
+            }
+        }
+
+        private void ChooseTheme()
+        {
+            using (var picker = new ThemePickerForm(theme))
+            {
+                if (picker.ShowDialog(this) == DialogResult.OK &&
+                    picker.SelectedTheme != null && picker.SelectedTheme != theme)
+                    ApplyTheme(picker.SelectedTheme, true, true);
+            }
+        }
+
+        private void GridCellPainting(object sender, DataGridViewCellPaintingEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0)
+            {
+                bool active = grid.CurrentCell != null &&
+                    ((e.RowIndex == -1 && e.ColumnIndex == grid.CurrentCell.ColumnIndex) ||
+                     (e.ColumnIndex == -1 && e.RowIndex == grid.CurrentCell.RowIndex));
+                using (var brush = new SolidBrush(
+                    active ? theme.HeaderActive : theme.Header))
+                    e.Graphics.FillRectangle(brush, e.CellBounds);
+                using (var pen = new Pen(theme.Border))
+                {
+                    e.Graphics.DrawLine(pen, e.CellBounds.Right - 1, e.CellBounds.Top,
+                        e.CellBounds.Right - 1, e.CellBounds.Bottom);
+                    e.Graphics.DrawLine(pen, e.CellBounds.Left, e.CellBounds.Bottom - 1,
+                        e.CellBounds.Right, e.CellBounds.Bottom - 1);
+                }
+                string text = "";
+                if (e.RowIndex >= 0)
+                    text = (e.RowIndex + 1).ToString();
+                else if (e.ColumnIndex >= 0)
+                    text = grid.Columns[e.ColumnIndex].HeaderText;
+                TextRenderer.DrawText(e.Graphics, text, HeaderFont, e.CellBounds,
+                    active ? theme.Accent : theme.Muted,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                e.Handled = true;
+                return;
+            }
+
+            if (grid.CurrentCell != null &&
+                e.RowIndex == grid.CurrentCell.RowIndex &&
+                e.ColumnIndex == grid.CurrentCell.ColumnIndex)
+            {
+                e.Paint(e.CellBounds, e.PaintParts & ~DataGridViewPaintParts.Focus);
+                using (var pen = new Pen(theme.Accent, 2F))
+                {
+                    var rectangle = e.CellBounds;
+                    rectangle.Width -= 1;
+                    rectangle.Height -= 1;
+                    e.Graphics.DrawRectangle(pen, rectangle);
+                }
+                using (var brush = new SolidBrush(theme.Accent))
+                    e.Graphics.FillRectangle(brush, e.CellBounds.Right - 7,
+                        e.CellBounds.Bottom - 7, 7, 7);
+                e.Handled = true;
+                return;
+            }
+
+            if (fillDragging &&
+                e.RowIndex >= Math.Min(fillSourceRow, fillTargetRow) &&
+                e.RowIndex <= Math.Max(fillSourceRow, fillTargetRow) &&
+                e.ColumnIndex >= Math.Min(fillSourceColumn, fillTargetColumn) &&
+                e.ColumnIndex <= Math.Max(fillSourceColumn, fillTargetColumn))
+            {
+                e.Paint(e.CellBounds, e.PaintParts & ~DataGridViewPaintParts.Focus);
+                using (var brush = new SolidBrush(Color.FromArgb(55, theme.Accent)))
+                    e.Graphics.FillRectangle(brush, e.CellBounds);
+                e.Handled = true;
+            }
+        }
+
+        private static void AddMenuItem(ToolStripMenuItem parent, string text,
+            Keys shortcut, Action action)
+        {
+            var item = new ToolStripMenuItem(text);
+            item.ShortcutKeys = shortcut;
+            item.Click += delegate { action(); };
+            parent.DropDownItems.Add(item);
+        }
+
+        private static void AddToolbarButton(ToolStrip toolbar, string text,
+            string tooltip, Action action)
+        {
+            var button = new ToolStripButton(text);
+            button.ToolTipText = tooltip;
+            button.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            button.Padding = new Padding(4, 2, 4, 2);
+            button.Click += delegate { action(); };
+            toolbar.Items.Add(button);
+        }
+
+        private void UpdateSelection()
+        {
+            if (grid.CurrentCell == null)
+                return;
+            addressBox.Text = ((char)('A' + grid.CurrentCell.ColumnIndex)).ToString()
+                + (grid.CurrentCell.RowIndex + 1);
+            syncingContent = true;
+            contentBox.Text = Convert.ToString(grid.CurrentCell.Value) ?? "";
+            syncingContent = false;
+
+            Font font = grid.CurrentCell.InheritedStyle.Font ?? grid.Font;
+            syncingToolbar = true;
+            sizeCombo.Text = font.Size.ToString("0", CultureInfo.InvariantCulture);
+            boldButton.Checked = (font.Style & FontStyle.Bold) != 0;
+            italicButton.Checked = (font.Style & FontStyle.Italic) != 0;
+            underlineButton.Checked = (font.Style & FontStyle.Underline) != 0;
+            syncingToolbar = false;
+        }
+
+        private void MarkDirty()
+        {
+            dirty = true;
+            status.Text = "Có thay đổi chưa lưu";
+            saveIndicator.Text = "Chưa lưu";
+            UpdateTitle();
+        }
+
+        private SheetState CaptureSheet()
+        {
+            var state = new SheetState();
+            state.Background = sheetBackground;
+            state.ThemeId = theme.Id;
+            state.CsvRows = csvDocument == null ? 0 : csvDocument.DataRows;
+            state.CsvColumns = csvDocument == null ? 0 : csvDocument.DataColumns;
+            for (int row = 0; row < RowCount; row++)
+            {
+                state.RowHeights[row] = grid.Rows[row].Height;
+                for (int column = 0; column < ColumnCount; column++)
+                {
+                    DataGridViewCell cell = grid[column, row];
+                    DataGridViewCellStyle style = cell.HasStyle ? cell.Style : null;
+                    if (cell.Value == null && !HasMeaningfulStyle(style))
+                        continue;
+                    state.Cells[row * ColumnCount + column] = new CellState
+                    {
+                        Value = cell.Value,
+                        Style = HasMeaningfulStyle(style) ?
+                            new DataGridViewCellStyle(style) : null
+                    };
+                }
+            }
+            for (int column = 0; column < ColumnCount; column++)
+                state.ColumnWidths[column] = grid.Columns[column].Width;
+            return state;
+        }
+
+        private static bool HasMeaningfulStyle(DataGridViewCellStyle style)
+        {
+            return style != null && (style.Font != null ||
+                !style.ForeColor.IsEmpty || !style.BackColor.IsEmpty ||
+                style.Alignment != DataGridViewContentAlignment.NotSet);
+        }
+
+        private void ResetHistory()
+        {
+            undoHistory.Clear();
+            redoHistory.Clear();
+            nextRevision = 0;
+            savedRevision = 0;
+            lastState = CaptureSheet();
+            lastState.RevisionId = 0;
+        }
+
+        private void RecordChange()
+        {
+            if (lastState == null)
+            {
+                lastState = CaptureSheet();
+                return;
+            }
+            undoHistory.Add(lastState);
+            if (undoHistory.Count > 50)
+                undoHistory.RemoveAt(0);
+            redoHistory.Clear();
+            lastState = CaptureSheet();
+            lastState.RevisionId = ++nextRevision;
+        }
+
+        private void RestoreSheet(SheetState state)
+        {
+            loading = true;
+            grid.SuspendLayout();
+            try
+            {
+                foreach (DataGridViewRow row in grid.Rows)
+                    foreach (DataGridViewCell cell in row.Cells)
+                    {
+                        if (cell.Value != null || cell.HasStyle)
+                        {
+                            cell.Value = null;
+                            cell.Style = new DataGridViewCellStyle();
+                        }
+                    }
+                foreach (KeyValuePair<int, CellState> item in state.Cells)
+                {
+                    DataGridViewCell cell = grid[item.Key % ColumnCount,
+                        item.Key / ColumnCount];
+                    cell.Value = item.Value.Value;
+                    if (item.Value.Style != null)
+                        cell.Style = new DataGridViewCellStyle(item.Value.Style);
+                }
+                for (int row = 0; row < RowCount; row++)
+                    grid.Rows[row].Height = state.RowHeights[row];
+                for (int column = 0; column < ColumnCount; column++)
+                    grid.Columns[column].Width = state.ColumnWidths[column];
+                if (csvDocument != null)
+                {
+                    csvDocument.DataRows = state.CsvRows;
+                    csvDocument.DataColumns = state.CsvColumns;
+                }
+                ThemePalette selected = ThemePalette.Find(state.ThemeId);
+                if (selected != null && selected != theme)
+                    ApplyTheme(selected, false, true);
+                ApplySheetBackground(state.Background, false);
+            }
+            finally
+            {
+                grid.ResumeLayout();
+                loading = false;
+            }
+            Recalculate();
+            dirty = state.RevisionId != savedRevision;
+            saveIndicator.Text = dirty ? "Chưa lưu" :
+                currentPath == null ? "" : "Đã lưu trên máy";
+            UpdateTitle();
+            UpdateSelection();
+            grid.Invalidate();
+        }
+
+        private void Undo()
+        {
+            grid.EndEdit();
+            if (undoHistory.Count == 0)
+                return;
+            int last = undoHistory.Count - 1;
+            SheetState previous = undoHistory[last];
+            undoHistory.RemoveAt(last);
+            redoHistory.Add(lastState);
+            RestoreSheet(previous);
+            lastState = CaptureSheet();
+            lastState.RevisionId = previous.RevisionId;
+            status.Text = "Đã hoàn tác";
+        }
+
+        private void Redo()
+        {
+            grid.EndEdit();
+            if (redoHistory.Count == 0)
+                return;
+            int last = redoHistory.Count - 1;
+            SheetState next = redoHistory[last];
+            redoHistory.RemoveAt(last);
+            undoHistory.Add(lastState);
+            RestoreSheet(next);
+            lastState = CaptureSheet();
+            lastState.RevisionId = next.RevisionId;
+            status.Text = "Đã làm lại";
+        }
+
+        private void UpdateTitle()
+        {
+            string name = currentPath == null ? "Bảng tính chưa đặt tên" :
+                Path.GetFileNameWithoutExtension(currentPath);
+            Text = name + (dirty ? " *" : "") + " - DinkCel";
+            documentTitle.Text = name;
+            if (!dirty)
+                saveIndicator.Text = currentPath == null ? "" : "Đã lưu trên máy";
+        }
+
+        private bool ConfirmDiscardChanges()
+        {
+            if (!dirty)
+                return true;
+            DialogResult answer = MessageBox.Show(this,
+                "Bảng tính có thay đổi chưa lưu. Bạn muốn lưu không?",
+                "DinkCel", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (answer == DialogResult.Cancel)
+                return false;
+            if (answer == DialogResult.Yes)
+                return SaveDocument();
+            return true;
+        }
+
+        private void ClearGrid()
+        {
+            loading = true;
+            grid.SuspendLayout();
+            foreach (DataGridViewRow row in grid.Rows)
+            {
+                foreach (DataGridViewCell cell in row.Cells)
+                {
+                    if (cell.Value != null || cell.HasStyle)
+                    {
+                        cell.Value = null;
+                        cell.Style = new DataGridViewCellStyle();
+                    }
+                }
+            }
+            grid.ResumeLayout();
+            loading = false;
+            grid.ClearSelection();
+            grid.CurrentCell = grid[0, 0];
+            grid[0, 0].Selected = true;
+            calculated.Clear();
+            UpdateSelection();
+        }
+
+        private void NewDocument()
+        {
+            if (!ConfirmDiscardChanges())
+                return;
+            ClearGrid();
+            ApplySheetBackground(theme.Sheet, false);
+            currentPath = null;
+            csvDocument = null;
+            dirty = false;
+            status.Text = "Bảng tính mới";
+            Recalculate();
+            UpdateTitle();
+            ResetHistory();
+        }
+
+        private void OpenDocument()
+        {
+            if (!ConfirmDiscardChanges())
+                return;
+            using (var dialog = new OpenFileDialog())
+            {
+                dialog.Filter = "DinkCel và CSV (*.dinkcel;*.csv)|*.dinkcel;*.csv|DinkCel (*.dinkcel)|*.dinkcel|CSV (*.csv)|*.csv";
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                    return;
+                OpenPath(dialog.FileName);
+            }
+        }
+
+        private void OpenPath(string path)
+        {
+                try
+                {
+                    bool isCsv = string.Equals(Path.GetExtension(path), ".csv",
+                        StringComparison.OrdinalIgnoreCase);
+                    CsvDocument csv = null;
+                    WorkbookSnapshot workbook = isCsv ? ReadCsvWorkbook(path, out csv) : ReadWorkbook(path);
+                    ClearGrid();
+                    ThemePalette savedTheme = ThemePalette.Find(workbook.ThemeId);
+                    if (savedTheme != null)
+                        ApplyTheme(savedTheme, false, true);
+                    if (workbook.HasBackground)
+                        ApplySheetBackground(workbook.Background, false);
+                    loading = true;
+                    foreach (KeyValuePair<int, CellSnapshot> item in workbook.Cells)
+                    {
+                        DataGridViewCell cell =
+                            grid[item.Key % ColumnCount, item.Key / ColumnCount];
+                        CellSnapshot value = item.Value;
+                        cell.Value = value.Text;
+                        if (value.HasFont)
+                            cell.Style.Font = new Font(grid.Font.FontFamily,
+                                value.FontSize, value.FontStyle);
+                        if (!value.ForeColor.IsEmpty)
+                            cell.Style.ForeColor = value.ForeColor;
+                        if (!value.BackColor.IsEmpty)
+                            cell.Style.BackColor = value.BackColor;
+                        if (value.Alignment != DataGridViewContentAlignment.NotSet)
+                            cell.Style.Alignment = value.Alignment;
+                    }
+                    loading = false;
+                    currentPath = path;
+                    csvDocument = csv;
+                    dirty = false;
+                    Recalculate();
+                    UpdateSelection();
+                    UpdateTitle();
+                    status.Text = "Đã mở " + Path.GetFileName(path);
+                    ResetHistory();
+                }
+                catch (Exception error)
+                {
+                    loading = false;
+                    MessageBox.Show(this, "Không mở được tệp: " + error.Message,
+                        "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+        }
+
+        private static WorkbookSnapshot ReadCsvWorkbook(string path, out CsvDocument csv)
+        {
+            var workbook = new WorkbookSnapshot();
+            csv = CsvFile.ReadDocument(path, RowCount, ColumnCount);
+            IList<string[]> rows = csv.Rows;
+            for (int row = 0; row < rows.Count; row++)
+                for (int column = 0; column < rows[row].Length; column++)
+                    if (rows[row][column].Length > 0)
+                        workbook.Cells[row * ColumnCount + column] =
+                            new CellSnapshot { Text = rows[row][column] };
+            return workbook;
+        }
+
+        private static WorkbookSnapshot ReadWorkbook(string path)
+        {
+            var document = XDocument.Load(path);
+            if (document.Root == null || document.Root.Name != "workbook")
+                throw new InvalidDataException("Định dạng bảng tính không hợp lệ.");
+            var workbook = new WorkbookSnapshot();
+            XAttribute themeAttribute = document.Root.Attribute("theme");
+            if (themeAttribute != null)
+                workbook.ThemeId = themeAttribute.Value;
+            XAttribute background = document.Root.Attribute("background");
+            if (background != null)
+            {
+                workbook.Background = ColorTranslator.FromHtml(background.Value);
+                workbook.HasBackground = true;
+            }
+            foreach (XElement element in document.Root.Elements("cell"))
+            {
+                int row = int.Parse(element.Attribute("row").Value) - 1;
+                int column = int.Parse(element.Attribute("column").Value) - 1;
+                if (row < 0 || row >= RowCount || column < 0 || column >= ColumnCount)
+                    throw new InvalidDataException("Tệp chứa ô nằm ngoài bảng.");
+                var snapshot = new CellSnapshot();
+                snapshot.Text = element.Value;
+                XAttribute style = element.Attribute("fontStyle");
+                XAttribute size = element.Attribute("fontSize");
+                if (style != null || size != null)
+                {
+                    snapshot.HasFont = true;
+                    if (style != null)
+                    {
+                        int flags = int.Parse(style.Value);
+                        if (flags < 0 || flags > 15)
+                            throw new InvalidDataException("Định dạng chữ không hợp lệ.");
+                        snapshot.FontStyle = (FontStyle)flags;
+                    }
+                    if (size != null)
+                    {
+                        snapshot.FontSize = float.Parse(size.Value,
+                            CultureInfo.InvariantCulture);
+                        if (float.IsNaN(snapshot.FontSize) ||
+                            float.IsInfinity(snapshot.FontSize) ||
+                            snapshot.FontSize < 6F || snapshot.FontSize > 72F)
+                            throw new InvalidDataException("Cỡ chữ không hợp lệ.");
+                    }
+                }
+                XAttribute fore = element.Attribute("fore");
+                XAttribute back = element.Attribute("back");
+                XAttribute align = element.Attribute("align");
+                if (fore != null)
+                    snapshot.ForeColor = ColorTranslator.FromHtml(fore.Value);
+                if (back != null)
+                    snapshot.BackColor = ColorTranslator.FromHtml(back.Value);
+                if (align != null)
+                    snapshot.Alignment = (DataGridViewContentAlignment)Enum.Parse(
+                        typeof(DataGridViewContentAlignment), align.Value);
+                workbook.Cells[row * ColumnCount + column] = snapshot;
+            }
+            return workbook;
+        }
+
+        private bool SaveDocument()
+        {
+            grid.EndEdit();
+            if (currentPath == null)
+                return SaveDocumentAs();
+            if (!dirty)
+                return true;
+            return WriteDocument(currentPath);
+        }
+
+        private bool SaveDocumentAs()
+        {
+            using (var dialog = new SaveFileDialog())
+            {
+                bool csv = IsCsvPath(currentPath);
+                dialog.Filter = csv ?
+                    "CSV (*.csv)|*.csv|DinkCel (*.dinkcel)|*.dinkcel" :
+                    "DinkCel (*.dinkcel)|*.dinkcel|CSV (*.csv)|*.csv";
+                dialog.DefaultExt = csv ? "csv" : "dinkcel";
+                dialog.AddExtension = false;
+                dialog.OverwritePrompt = false;
+                dialog.FileName = currentPath == null ? "BangTinh" :
+                    Path.GetFileNameWithoutExtension(currentPath);
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                    return false;
+                bool selectedCsv = csv ? dialog.FilterIndex == 1 : dialog.FilterIndex == 2;
+                string path = Path.ChangeExtension(dialog.FileName,
+                    selectedCsv ? ".csv" : ".dinkcel");
+                if (File.Exists(path) && MessageBox.Show(this,
+                    "Tệp đã tồn tại. Bạn muốn ghi đè không?", "DinkCel",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                    return false;
+                return WriteDocument(path);
+            }
+        }
+
+        private static bool IsCsvPath(string path)
+        {
+            return path != null && string.Equals(Path.GetExtension(path), ".csv",
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool WriteDocument(string path)
+        {
+            return IsCsvPath(path) ? WriteCsv(path) : WriteWorkbook(path);
+        }
+
+        private bool WriteCsv(string path)
+        {
+            try
+            {
+                grid.EndEdit();
+                int rows = csvDocument == null ? 0 : csvDocument.DataRows;
+                int columns = csvDocument == null ? 0 : csvDocument.DataColumns;
+                for (int row = 0; row < RowCount; row++)
+                    for (int column = 0; column < ColumnCount; column++)
+                    {
+                        string value = Convert.ToString(grid[column, row].Value) ?? "";
+                        if (value.Length == 0)
+                            continue;
+                        rows = Math.Max(rows, row + 1);
+                        columns = Math.Max(columns, column + 1);
+                    }
+                var values = new List<string[]>();
+                for (int row = 0; row < rows; row++)
+                {
+                    var fields = new string[columns];
+                    for (int column = 0; column < columns; column++)
+                        fields[column] = Convert.ToString(grid[column, row].Value) ?? "";
+                    values.Add(fields);
+                }
+                CsvFile.Write(path, values, csvDocument);
+                Encoding encoding = csvDocument == null ? new UTF8Encoding(true) : csvDocument.Encoding;
+                string newline = csvDocument == null ? Environment.NewLine : csvDocument.NewLine;
+                bool trailing = csvDocument == null || csvDocument.EndsWithNewLine;
+                csvDocument = new CsvDocument
+                {
+                    Rows = values,
+                    Encoding = encoding,
+                    NewLine = newline,
+                    EndsWithNewLine = trailing,
+                    DataRows = rows,
+                    DataColumns = columns
+                };
+                currentPath = path;
+                dirty = false;
+                lastState = CaptureSheet();
+                lastState.RevisionId = nextRevision;
+                savedRevision = nextRevision;
+                UpdateTitle();
+                status.Text = "Đã lưu " + Path.GetFileName(path) + " (CSV chỉ lưu dữ liệu ô)";
+                return true;
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show(this, "Không lưu được CSV: " + error.Message,
+                    "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        private bool WriteWorkbook(string path)
+        {
+            try
+            {
+                grid.EndEdit();
+                var root = new XElement("workbook",
+                    new XAttribute("rows", RowCount),
+                    new XAttribute("columns", ColumnCount),
+                    new XAttribute("theme", theme.Id),
+                    new XAttribute("background",
+                        ColorTranslator.ToHtml(sheetBackground)));
+                for (int row = 0; row < RowCount; row++)
+                {
+                    for (int column = 0; column < ColumnCount; column++)
+                    {
+                        DataGridViewCell cell = grid[column, row];
+                        string value = Convert.ToString(cell.Value) ?? "";
+                        DataGridViewCellStyle style = cell.HasStyle ? cell.Style : null;
+                        bool hasStyle = style != null &&
+                            (style.Font != null || !style.ForeColor.IsEmpty ||
+                             !style.BackColor.IsEmpty ||
+                             style.Alignment != DataGridViewContentAlignment.NotSet);
+                        if (value.Length == 0 && !hasStyle)
+                            continue;
+                        var entry = new XElement("cell",
+                            new XAttribute("row", row + 1),
+                            new XAttribute("column", column + 1), value);
+                        if (style != null && style.Font != null)
+                        {
+                            entry.SetAttributeValue("fontStyle", (int)style.Font.Style);
+                            entry.SetAttributeValue("fontSize",
+                                style.Font.Size.ToString(CultureInfo.InvariantCulture));
+                        }
+                        if (style != null && !style.ForeColor.IsEmpty)
+                            entry.SetAttributeValue("fore",
+                                ColorTranslator.ToHtml(style.ForeColor));
+                        if (style != null && !style.BackColor.IsEmpty)
+                            entry.SetAttributeValue("back",
+                                ColorTranslator.ToHtml(style.BackColor));
+                        if (style != null &&
+                            style.Alignment != DataGridViewContentAlignment.NotSet)
+                            entry.SetAttributeValue("align", style.Alignment.ToString());
+                        root.Add(entry);
+                    }
+                }
+                new XDocument(root).Save(path);
+                currentPath = path;
+                csvDocument = null;
+                dirty = false;
+                lastState = CaptureSheet();
+                lastState.RevisionId = nextRevision;
+                savedRevision = nextRevision;
+                UpdateTitle();
+                status.Text = "Đã lưu " + Path.GetFileName(path);
+                return true;
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show(this, "Không lưu được tệp: " + error.Message,
+                    "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        private void ApplyToSelection(Action<DataGridViewCell> action)
+        {
+            if (grid.CurrentCell == null)
+                return;
+            if (grid.SelectedCells.Count == 0)
+                action(grid.CurrentCell);
+            else
+                foreach (DataGridViewCell cell in grid.SelectedCells)
+                    action(cell);
+            RecordChange();
+            MarkDirty();
+            UpdateSelection();
+            grid.Invalidate();
+        }
+
+        private void ToggleFontStyle(FontStyle flag)
+        {
+            if (grid.CurrentCell == null)
+                return;
+            Font current = grid.CurrentCell.InheritedStyle.Font ?? grid.Font;
+            bool enable = (current.Style & flag) == 0;
+            ApplyToSelection(delegate(DataGridViewCell cell)
+            {
+                Font oldFont = cell.InheritedStyle.Font ?? grid.Font;
+                FontStyle next = enable ? oldFont.Style | flag : oldFont.Style & ~flag;
+                cell.Style.Font = new Font(oldFont.FontFamily, oldFont.Size, next);
+            });
+        }
+
+        private void ApplyFontSize(float size)
+        {
+            if (size < 6F || size > 72F)
+                return;
+            ApplyToSelection(delegate(DataGridViewCell cell)
+            {
+                Font oldFont = cell.InheritedStyle.Font ?? grid.Font;
+                cell.Style.Font = new Font(oldFont.FontFamily, size, oldFont.Style);
+            });
+        }
+
+        private void ChooseColor(bool background)
+        {
+            using (var dialog = new ColorDialog())
+            {
+                dialog.FullOpen = true;
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                    return;
+                ApplyToSelection(delegate(DataGridViewCell cell)
+                {
+                    if (background)
+                        cell.Style.BackColor = dialog.Color;
+                    else
+                        cell.Style.ForeColor = dialog.Color;
+                });
+            }
+        }
+
+        private void ApplyAlignment(DataGridViewContentAlignment alignment)
+        {
+            ApplyToSelection(delegate(DataGridViewCell cell)
+            {
+                cell.Style.Alignment = alignment;
+            });
+        }
+
+        private void CopySelected()
+        {
+            if (grid.SelectedCells.Count > 0)
+                Clipboard.SetDataObject(grid.GetClipboardContent());
+        }
+
+        private void ClearSelectedCells()
+        {
+            if (grid.CurrentCell == null)
+                return;
+            grid.EndEdit();
+            var targets = new List<DataGridViewCell>();
+            if (grid.SelectedCells.Count == 0)
+                targets.Add(grid.CurrentCell);
+            else
+                foreach (DataGridViewCell cell in grid.SelectedCells)
+                    targets.Add(cell);
+            bool changed = false;
+            loading = true;
+            try
+            {
+                foreach (DataGridViewCell cell in targets)
+                {
+                    if (cell.Value == null)
+                        continue;
+                    cell.Value = null;
+                    changed = true;
+                }
+            }
+            finally
+            {
+                loading = false;
+            }
+            if (!changed)
+                return;
+            Recalculate();
+            RecordChange();
+            MarkDirty();
+            UpdateSelection();
+            status.Text = "Đã xóa nội dung " + targets.Count + " ô";
+        }
+
+        private void PasteSelected()
+        {
+            if (grid.CurrentCell == null || !Clipboard.ContainsText())
+                return;
+            string[] lines = Clipboard.GetText().TrimEnd('\r', '\n').Split('\n');
+            int startRow = grid.CurrentCell.RowIndex;
+            int startColumn = grid.CurrentCell.ColumnIndex;
+            loading = true;
+            try
+            {
+                for (int row = 0; row < lines.Length && startRow + row < RowCount; row++)
+                {
+                    string[] values = lines[row].TrimEnd('\r').Split('\t');
+                    for (int column = 0;
+                        column < values.Length && startColumn + column < ColumnCount;
+                        column++)
+                        grid[startColumn + column, startRow + row].Value = values[column];
+                }
+            }
+            finally
+            {
+                loading = false;
+            }
+            Recalculate();
+            RecordChange();
+            MarkDirty();
+            UpdateSelection();
+        }
+
+        private void GridCellMouseClick(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.RowIndex >= 0 && e.ColumnIndex == -1)
+            {
+                SelectHeader(e.RowIndex, true);
+                if (e.Button == MouseButtons.Right)
+                    rowContext.Show(grid, grid.PointToClient(Cursor.Position));
+            }
+            else if (e.ColumnIndex >= 0 && e.RowIndex == -1)
+            {
+                SelectHeader(e.ColumnIndex, false);
+                if (e.Button == MouseButtons.Right)
+                    columnContext.Show(grid, grid.PointToClient(Cursor.Position));
+            }
+        }
+
+        private void SelectHeader(int index, bool row)
+        {
+            selectingHeader = true;
+            try
+            {
+                grid.CurrentCell = row ? grid[0, index] : grid[index, 0];
+                grid.ClearSelection();
+                if (row)
+                    for (int column = 0; column < ColumnCount; column++)
+                        grid[column, index].Selected = true;
+                else
+                    for (int line = 0; line < RowCount; line++)
+                        grid[index, line].Selected = true;
+            }
+            finally
+            {
+                selectingHeader = false;
+            }
+            UpdateSelection();
+            grid.Invalidate();
+        }
+
+        private void InsertRow() { ChangeStructure(true, true); }
+        private void DeleteRow() { ChangeStructure(true, false); }
+        private void InsertColumn() { ChangeStructure(false, true); }
+        private void DeleteColumn() { ChangeStructure(false, false); }
+
+        private void ChangeStructure(bool row, bool insert)
+        {
+            if (grid.CurrentCell == null)
+                return;
+            grid.EndEdit();
+            int index = row ? grid.CurrentCell.RowIndex : grid.CurrentCell.ColumnIndex;
+            if (insert && index == (row ? RowCount : ColumnCount) - 1)
+            {
+                MessageBox.Show(this,
+                    "Không thể chèn tại mép cuối của bảng 200 hàng × 26 cột.",
+                    "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (insert && EdgeHasContent(row))
+            {
+                MessageBox.Show(this,
+                    row ? "Không thể chèn: hàng 200 đang có dữ liệu hoặc định dạng."
+                        : "Không thể chèn: cột Z đang có dữ liệu hoặc định dạng.",
+                    "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            loading = true;
+            grid.SuspendLayout();
+            try
+            {
+                if (row)
+                {
+                    if (insert)
+                    {
+                        for (int line = RowCount - 1; line > index; line--)
+                            CopyRow(line - 1, line);
+                        ClearRow(index);
+                    }
+                    else
+                    {
+                        for (int line = index; line < RowCount - 1; line++)
+                            CopyRow(line + 1, line);
+                        ClearRow(RowCount - 1);
+                    }
+                }
+                else
+                {
+                    if (insert)
+                    {
+                        for (int column = ColumnCount - 1; column > index; column--)
+                            CopyColumn(column - 1, column);
+                        ClearColumn(index);
+                    }
+                    else
+                    {
+                        for (int column = index; column < ColumnCount - 1; column++)
+                            CopyColumn(column + 1, column);
+                        ClearColumn(ColumnCount - 1);
+                    }
+                }
+                RebaseFormulas(row, index, insert);
+                if (csvDocument != null)
+                {
+                    if (row && (insert ? index <= csvDocument.DataRows :
+                        index < csvDocument.DataRows))
+                        csvDocument.DataRows = Math.Max(0, Math.Min(RowCount,
+                            csvDocument.DataRows + (insert ? 1 : -1)));
+                    if (!row && (insert ? index <= csvDocument.DataColumns :
+                        index < csvDocument.DataColumns))
+                        csvDocument.DataColumns = Math.Max(0, Math.Min(ColumnCount,
+                            csvDocument.DataColumns + (insert ? 1 : -1)));
+                }
+            }
+            finally
+            {
+                grid.ResumeLayout();
+                loading = false;
+            }
+            SelectHeader(index, row);
+            Recalculate();
+            RecordChange();
+            MarkDirty();
+            status.Text = (insert ? "Đã chèn " : "Đã xóa ") +
+                (row ? "hàng " + (index + 1) : "cột " + (char)('A' + index));
+        }
+
+        private bool EdgeHasContent(bool row)
+        {
+            if (row && grid.Rows[RowCount - 1].Height != grid.RowTemplate.Height)
+                return true;
+            if (!row && grid.Columns[ColumnCount - 1].Width != 120)
+                return true;
+            int count = row ? ColumnCount : RowCount;
+            for (int i = 0; i < count; i++)
+            {
+                DataGridViewCell cell = row ? grid[i, RowCount - 1]
+                    : grid[ColumnCount - 1, i];
+                DataGridViewCellStyle style = cell.HasStyle ? cell.Style : null;
+                if (cell.Value != null && Convert.ToString(cell.Value).Length > 0)
+                    return true;
+                if (style != null && (style.Font != null ||
+                    !style.ForeColor.IsEmpty || !style.BackColor.IsEmpty ||
+                    style.Alignment != DataGridViewContentAlignment.NotSet))
+                    return true;
+            }
+            return false;
+        }
+
+        private void CopyCell(int sourceColumn, int sourceRow,
+            int targetColumn, int targetRow)
+        {
+            DataGridViewCell source = grid[sourceColumn, sourceRow];
+            DataGridViewCell target = grid[targetColumn, targetRow];
+            target.Value = source.Value;
+            target.Style = source.HasStyle ? new DataGridViewCellStyle(source.Style)
+                : new DataGridViewCellStyle();
+        }
+
+        private void ClearCell(int column, int row)
+        {
+            DataGridViewCell cell = grid[column, row];
+            cell.Value = null;
+            cell.Style = new DataGridViewCellStyle();
+        }
+
+        private void CopyRow(int source, int target)
+        {
+            for (int column = 0; column < ColumnCount; column++)
+                CopyCell(column, source, column, target);
+            grid.Rows[target].Height = grid.Rows[source].Height;
+        }
+
+        private void ClearRow(int row)
+        {
+            for (int column = 0; column < ColumnCount; column++)
+                ClearCell(column, row);
+            grid.Rows[row].Height = grid.RowTemplate.Height;
+        }
+
+        private void CopyColumn(int source, int target)
+        {
+            for (int row = 0; row < RowCount; row++)
+                CopyCell(source, row, target, row);
+            grid.Columns[target].Width = grid.Columns[source].Width;
+        }
+
+        private void ClearColumn(int column)
+        {
+            for (int row = 0; row < RowCount; row++)
+                ClearCell(column, row);
+            grid.Columns[column].Width = 120;
+        }
+
+        private void RebaseFormulas(bool row, int index, bool insert)
+        {
+            for (int line = 0; line < RowCount; line++)
+                for (int column = 0; column < ColumnCount; column++)
+                {
+                    DataGridViewCell cell = grid[column, line];
+                    string raw = Convert.ToString(cell.Value) ?? "";
+                    if (raw.StartsWith("=", StringComparison.Ordinal))
+                        cell.Value = FormulaEngine.ShiftStructureReferences(raw,
+                            row, index, insert, RowCount, ColumnCount);
+                }
+        }
+
+        private void GridCellMouseMove(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (fillDragging || grid.CurrentCell == null ||
+                e.RowIndex != grid.CurrentCell.RowIndex ||
+                e.ColumnIndex != grid.CurrentCell.ColumnIndex)
+                return;
+            Rectangle rectangle = grid.GetCellDisplayRectangle(
+                e.ColumnIndex, e.RowIndex, false);
+            grid.Cursor = e.X >= rectangle.Width - 11 &&
+                e.Y >= rectangle.Height - 11 ? Cursors.Cross : Cursors.Default;
+        }
+
+        private void GridCellMouseDown(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || grid.CurrentCell == null ||
+                e.RowIndex != grid.CurrentCell.RowIndex ||
+                e.ColumnIndex != grid.CurrentCell.ColumnIndex)
+                return;
+            Rectangle rectangle = grid.GetCellDisplayRectangle(
+                e.ColumnIndex, e.RowIndex, false);
+            if (e.X < rectangle.Width - 11 || e.Y < rectangle.Height - 11)
+                return;
+            fillDragging = true;
+            fillSourceRow = e.RowIndex;
+            fillSourceColumn = e.ColumnIndex;
+            fillTargetRow = e.RowIndex;
+            fillTargetColumn = e.ColumnIndex;
+            grid.Capture = true;
+            grid.Cursor = Cursors.Cross;
+        }
+
+        private void GridMouseMove(object sender, MouseEventArgs e)
+        {
+            if (!fillDragging)
+                return;
+            DataGridView.HitTestInfo hit = grid.HitTest(e.X, e.Y);
+            if (hit.RowIndex < 0 || hit.ColumnIndex < 0 ||
+                (hit.RowIndex == fillTargetRow && hit.ColumnIndex == fillTargetColumn))
+                return;
+            fillTargetRow = hit.RowIndex;
+            fillTargetColumn = hit.ColumnIndex;
+            status.Text = "Kéo để sao chép đến " +
+                ((char)('A' + fillTargetColumn)) + (fillTargetRow + 1);
+            grid.Invalidate();
+        }
+
+        private void GridMouseUp(object sender, MouseEventArgs e)
+        {
+            if (!fillDragging)
+                return;
+            DataGridView.HitTestInfo hit = grid.HitTest(e.X, e.Y);
+            if (hit.RowIndex >= 0 && hit.ColumnIndex >= 0)
+            {
+                fillTargetRow = hit.RowIndex;
+                fillTargetColumn = hit.ColumnIndex;
+            }
+            fillDragging = false;
+            grid.Capture = false;
+            grid.Cursor = Cursors.Default;
+            FillRange(fillSourceRow, fillSourceColumn, fillTargetRow, fillTargetColumn);
+            grid.Invalidate();
+        }
+
+        private void FillRange(int sourceRow, int sourceColumn,
+            int targetRow, int targetColumn)
+        {
+            if (sourceRow == targetRow && sourceColumn == targetColumn)
+                return;
+            DataGridViewCell source = grid[sourceColumn, sourceRow];
+            string raw = Convert.ToString(source.Value) ?? "";
+            DataGridViewCellStyle sourceStyle = source.HasStyle
+                ? new DataGridViewCellStyle(source.Style)
+                : new DataGridViewCellStyle();
+            loading = true;
+            grid.SuspendLayout();
+            try
+            {
+                for (int row = Math.Min(sourceRow, targetRow);
+                    row <= Math.Max(sourceRow, targetRow); row++)
+                {
+                    for (int column = Math.Min(sourceColumn, targetColumn);
+                        column <= Math.Max(sourceColumn, targetColumn); column++)
+                    {
+                        if (row == sourceRow && column == sourceColumn)
+                            continue;
+                        DataGridViewCell cell = grid[column, row];
+                        cell.Value = FormulaEngine.ShiftReferences(raw,
+                            row - sourceRow, column - sourceColumn,
+                            RowCount, ColumnCount);
+                        cell.Style = new DataGridViewCellStyle(sourceStyle);
+                    }
+                }
+            }
+            finally
+            {
+                grid.ResumeLayout();
+                loading = false;
+            }
+            Recalculate();
+            RecordChange();
+            MarkDirty();
+            UpdateSelection();
+        }
+
+        private void GridKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Delete && !grid.IsCurrentCellInEditMode)
+            {
+                ClearSelectedCells();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
+            if (e.Control && e.KeyCode == Keys.V)
+            {
+                PasteSelected();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+        }
+
+        protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.Z))
+            {
+                Undo();
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.Y))
+            {
+                Redo();
+                return true;
+            }
+            return base.ProcessCmdKey(ref message, keyData);
+        }
+    }
+}

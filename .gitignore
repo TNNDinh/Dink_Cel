@@ -1,0 +1,9 @@
+# Build outputs and personal settings
+/DinkCel.exe
+/tests/*.exe
+/tests/appearance.xml
+/appearance.xml
+/src/appearance.xml
+*.pdb
+*.user
+.vs/

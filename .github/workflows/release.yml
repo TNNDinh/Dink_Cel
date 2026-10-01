@@ -1,0 +1,42 @@
+name: Release Windows EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version and release notes
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($tag -ne "v$version") { throw "Tag $tag does not match VERSION $version" }
+          if (-not (Test-Path "releases/$tag.md")) { throw "Missing release notes for $tag" }
+          if (-not (Select-String -Path VersionInfo.cs -SimpleMatch ('AssemblyFileVersion("' + $version + '.0")'))) {
+            throw "VersionInfo.cs does not match VERSION $version"
+          }
+
+      - name: Run tests
+        shell: cmd
+        run: call test.cmd
+
+      - name: Build DinkCel.exe
+        shell: cmd
+        run: call build.cmd
+
+      - name: Publish release with EXE
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          gh release create $tag '.\DinkCel.exe#DinkCel.exe' --repo '${{ github.repository }}' --title "DinkCel $tag" --notes-file "releases/$tag.md" --verify-tag
