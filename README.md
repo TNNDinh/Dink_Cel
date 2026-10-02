@@ -12,7 +12,18 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.1.1
+## Tính năng v0.2.0
+
+- Nhiều sheet: thêm, đổi tên, xóa và chuyển sheet bằng các tab ở cuối cửa sổ. Undo/Redo được giữ riêng cho từng sheet khi chuyển tab.
+- Mở, lưu và **Lưu thành** `.xlsx` trực tiếp trên máy; hỗ trợ nhiều sheet, công thức, kiểu số, màu chữ/nền, căn lề, merge, kích thước hàng/cột, freeze, filter và quy tắc tô màu có điều kiện dạng “lớn hơn”. Vẫn mở được `.dinkcel` cũ và CSV.
+- Menu **Dữ liệu** có sắp xếp tăng/giảm theo cột đang chọn, lọc theo nội dung, bỏ lọc, tìm và thay thế. Nếu chọn một vùng nhiều hàng, sắp xếp chỉ áp dụng cho vùng hàng đó.
+- Menu **Ô** có định dạng số (`N2`, `P1`, `C2`, `0.00`...), gộp/bỏ gộp, AutoFit hàng/cột, cố định/bỏ cố định, tô màu có điều kiện và dán đặc biệt (chỉ giá trị hoặc chỉ định dạng). Vẫn kéo mép tiêu đề để chỉnh kích thước bằng tay.
+- Bổ sung công thức tham chiếu sheet (`Sheet2!A1`, `'Tên sheet'!A1`), ROUND/ROUNDUP/ROUNDDOWN, ABS, SQRT, INT, POWER, MOD, COUNTA, MEDIAN, AND, OR, NOT, LEN, LEFT, RIGHT, UPPER, LOWER, TRIM, CONCAT, COUNTIF và SUMIF.
+
+Giới hạn hiện tại: mỗi sheet tối đa 200 hàng × 26 cột. `.xlsx` tập trung vào dữ liệu và các định dạng nêu trên; chart, pivot, macro và các tính năng Excel nâng cao chưa được giữ khi lưu lại. CSV chỉ chứa một sheet và dữ liệu ô; nếu workbook có nhiều sheet, hãy lưu thành `.xlsx` hoặc `.dinkcel`.
+Lệnh **Dán chỉ định dạng** dùng vùng vừa sao chép trong DinkCel; **Dán chỉ giá trị** hỗ trợ cả văn bản từ ứng dụng khác.
+
+### Tính năng từ v0.1.1
 
 - Lưới 200 hàng × 26 cột, địa chỉ ô từ A1 đến Z200; có cuộn dọc và ngang.
 - Nhập dữ liệu trực tiếp vào ô hoặc qua thanh nội dung phía trên; địa chỉ ô đang chọn hiện bên trái.
@@ -33,7 +44,7 @@ Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy bu
 
 Ví dụ: nhập 10 vào A1, 20 vào A2, rồi nhập =SUM(A1:A2) vào A3; A3 sẽ hiển thị 30. Nhập =IF(A1>0,"Có","Không") để thử hàm điều kiện. Dùng dấu chấm cho số thập phân trong công thức. Có thể ngăn cách đối số hàm bằng dấu phẩy hoặc chấm phẩy.
 
-File .dinkcel là định dạng riêng của project, chưa phải .xlsx.
+File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx` dùng để trao đổi với Excel và Google Sheets.
 
 ## Một ứng dụng Excel cơ bản cần gì?
 
@@ -49,25 +60,27 @@ File .dinkcel là định dạng riêng của project, chưa phải .xlsx.
 | Quan trọng | Thao tác bảng | Thêm/xóa hàng cột, chỉnh độ rộng, hoàn tác/làm lại. |
 | Mở rộng | Nhiều sheet | Tạo, đổi tên, chuyển và xóa sheet. |
 | Mở rộng | Công cụ dữ liệu | Tìm kiếm, sắp xếp, lọc và biểu đồ cơ bản. |
-| Mở rộng | Tệp Excel | Đọc/ghi .xlsx bằng thư viện phù hợp sau khi phần cốt lõi chạy tốt. |
+| Mở rộng | Tệp Excel | Đọc/ghi `.xlsx` với nhiều sheet và các định dạng cơ bản. |
 
 ## Thứ tự tự làm gợi ý
 
 1. Đọc DesktopApp.cs: SpreadsheetForm tạo giao diện, đọc/ghi file và xử lý thao tác với ô.
 2. Mở rộng nhập/xuất CSV với tùy chọn dấu phân cách và mã hóa theo từng file.
-3. Đọc FormulaEngine.cs và thêm hàm mới như ROUND, COUNTIF, SUMIF.
-4. Mở rộng định dạng số/ngày và tối ưu lịch sử hoàn tác cho bảng lớn.
-5. Thêm nhiều sheet và lưu toàn bộ workbook.
+3. Đọc FormulaEngine.cs và thử viết thêm hàm hoặc công thức liên sheet.
+4. Mở rộng định dạng ngày và tối ưu bảng lớn hơn 200 × 26.
+5. Bổ sung biểu đồ, in và khả năng giữ nhiều thành phần Excel nâng cao.
 
 ## Cấu trúc
 
 - DinkCel.exe: ứng dụng để mở trực tiếp.
 - DinkCel.ico: icon được nhúng vào file .exe và dùng trên thanh tiêu đề. icon_dink_cell.png là ảnh gốc; chạy `powershell.exe -NoProfile -ExecutionPolicy Bypass -File make_icon.ps1` trong thư mục project để tạo lại .ico khi thay ảnh.
 - DesktopApp.cs: mã nguồn Windows Forms.
+- SpreadsheetFeatures.cs: các thao tác sheet, dữ liệu và định dạng trong giao diện.
+- XlsxFile.cs và XlsxStyles.cs: đọc/ghi `.xlsx`.
 - FormulaEngine.cs: phân tích và tính công thức, dịch tham chiếu khi kéo ô.
 - ThemePalette.cs: các mẫu màu và hộp chọn giao diện.
 - build.cmd: lệnh build lại ứng dụng.
-- test.cmd: kiểm tra bộ tính công thức.
+- test.cmd: kiểm tra công thức, CSV, nhiều sheet và `.xlsx`.
 
 ## Phát hành phiên bản mới
 

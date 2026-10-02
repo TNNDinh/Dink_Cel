@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 using System.Xml.Linq;
@@ -37,19 +38,51 @@ namespace DinkCel
         public Color BackColor = Color.Empty;
         public DataGridViewContentAlignment Alignment = DataGridViewContentAlignment.NotSet;
         public bool HasFont;
+        public string NumberFormat = "";
+    }
+
+    internal sealed class ConditionalRule
+    {
+        public Rectangle Range;
+        public double Threshold;
+        public Color Color;
     }
 
     internal sealed class WorkbookSnapshot
     {
-        public readonly Dictionary<int, CellSnapshot> Cells =
-            new Dictionary<int, CellSnapshot>();
+        public readonly List<SheetSnapshot> Sheets = new List<SheetSnapshot>();
+        public Dictionary<int, CellSnapshot> Cells { get { return Sheets[0].Cells; } }
         public Color Background = Color.FromArgb(232, 240, 248);
         public bool HasBackground;
         public string ThemeId;
+        public WorkbookSnapshot() { Sheets.Add(new SheetSnapshot()); }
+    }
+
+    internal sealed class SheetSnapshot
+    {
+        public string Name = "Sheet1";
+        public Color Background = Color.Empty;
+        public string ThemeId;
+        public readonly Dictionary<int, CellSnapshot> Cells = new Dictionary<int, CellSnapshot>();
+        public readonly Dictionary<int, int> RowHeights = new Dictionary<int, int>();
+        public readonly Dictionary<int, int> ColumnWidths = new Dictionary<int, int>();
+        public readonly List<Rectangle> Merges = new List<Rectangle>();
+        public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
+        public int FreezeRow;
+        public int FreezeColumn;
+        public int FilterColumn = -1;
+        public string FilterValue = "";
     }
 
     internal sealed class SheetState
     {
+        public string Name = "Sheet1";
+        public readonly List<Rectangle> Merges = new List<Rectangle>();
+        public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
+        public int FreezeRow;
+        public int FreezeColumn;
+        public int FilterColumn = -1;
+        public string FilterValue = "";
         public readonly Dictionary<int, CellState> Cells =
             new Dictionary<int, CellState>();
         public readonly int[] RowHeights = new int[200];
@@ -61,13 +94,22 @@ namespace DinkCel
         public long RevisionId;
     }
 
+    internal sealed class SheetHistory
+    {
+        public readonly List<SheetState> Undo = new List<SheetState>();
+        public readonly List<SheetState> Redo = new List<SheetState>();
+        public SheetState Last;
+        public long NextRevision;
+        public long SavedRevision;
+    }
+
     internal sealed class CellState
     {
         public object Value;
         public DataGridViewCellStyle Style;
     }
 
-    internal sealed class SpreadsheetForm : Form
+    internal sealed partial class SpreadsheetForm : Form
     {
         private const int RowCount = 200;
         private const int ColumnCount = 26;
@@ -85,6 +127,18 @@ namespace DinkCel
         private readonly Label fx = new Label();
         private readonly Panel footerPanel = new Panel();
         private readonly Label sheetTab = new Label();
+        private readonly FlowLayoutPanel sheetTabs = new FlowLayoutPanel();
+        private readonly List<SheetState> sheets = new List<SheetState>();
+        private int activeSheetIndex;
+        private readonly List<Rectangle> merges = new List<Rectangle>();
+        private CellState[,] copiedCells;
+        private string[,] copiedDisplays;
+        private string copiedClipboardText;
+        private readonly List<ConditionalRule> conditionalRules = new List<ConditionalRule>();
+        private int freezeRow;
+        private int freezeColumn;
+        private int filterColumn = -1;
+        private string filterValue = "";
         private readonly ToolStripLabel themeSwatch = new ToolStripLabel("●");
         private readonly TextBox addressBox = new TextBox();
         private readonly TextBox contentBox = new TextBox();
@@ -99,6 +153,7 @@ namespace DinkCel
             new Dictionary<int, string>();
         private readonly List<SheetState> undoHistory = new List<SheetState>();
         private readonly List<SheetState> redoHistory = new List<SheetState>();
+        private readonly List<SheetHistory> sheetHistories = new List<SheetHistory>();
         private SheetState lastState;
         private long nextRevision;
         private long savedRevision;
@@ -108,6 +163,7 @@ namespace DinkCel
         private ThemePalette theme;
         private Color sheetBackground;
         private bool dirty;
+        private bool otherSheetsDirty;
         private bool loading;
         private bool syncingContent;
         private bool syncingToolbar;
@@ -142,6 +198,8 @@ namespace DinkCel
             loading = true;
             BuildInterface();
             BuildGrid();
+            sheets.Add(new SheetState { Name = "Sheet1" });
+            RefreshSheetTabs();
             loading = false;
             dirty = false;
             ApplyTheme(theme, false, false);
@@ -247,6 +305,7 @@ namespace DinkCel
             var viewMenu = new ToolStripMenuItem("Xem");
             AddMenuItem(viewMenu, "Đổi giao diện...", Keys.None, ChooseTheme);
             menu.Items.Add(viewMenu);
+            AddSpreadsheetMenus();
             MainMenuStrip = menu;
             layout.Controls.Add(menu, 0, 1);
 
@@ -380,6 +439,15 @@ namespace DinkCel
             grid.RowHeadersDefaultCellStyle.BackColor = theme.Header;
             grid.ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableWithoutHeaderText;
             grid.CellPainting += GridCellPainting;
+            grid.Paint += PaintMergedCells;
+            grid.CellClick += delegate(object sender, DataGridViewCellEventArgs e)
+            {
+                if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+                foreach (Rectangle merge in merges)
+                    if (merge.Contains(e.ColumnIndex, e.RowIndex) &&
+                        (e.ColumnIndex != merge.X || e.RowIndex != merge.Y))
+                    { grid.CurrentCell = grid[merge.X, merge.Y]; break; }
+            };
             grid.CellFormatting += GridCellFormatting;
             grid.EditingControlShowing += GridEditingControlShowing;
             grid.SelectionChanged += delegate
@@ -446,7 +514,11 @@ namespace DinkCel
             tab.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             tab.TextAlign = ContentAlignment.MiddleCenter;
             tab.Bounds = new Rectangle(50, 5, 124, 32);
-            footer.Controls.Add(tab);
+            sheetTabs.Bounds = new Rectangle(8, 3, 680, 36);
+            sheetTabs.AutoScroll = true;
+            sheetTabs.WrapContents = false;
+            sheetTabs.FlowDirection = FlowDirection.LeftToRight;
+            footer.Controls.Add(sheetTabs);
             status.ForeColor = theme.Muted;
             status.TextAlign = ContentAlignment.MiddleRight;
             status.Bounds = new Rectangle(850, 6, 360, 30);
@@ -456,6 +528,7 @@ namespace DinkCel
                 status.Left = footer.ClientSize.Width - status.Width - 16;
             };
             layout.Controls.Add(footer, 0, 5);
+            RefreshSheetTabs();
         }
 
         private void BuildGrid()
@@ -482,7 +555,18 @@ namespace DinkCel
             var engine = new FormulaEngine(delegate(int row, int column)
             {
                 return Convert.ToString(grid[column, row].Value) ?? "";
-            }, RowCount, ColumnCount);
+            }, delegate(string name, int row, int column)
+            {
+                foreach (SheetState sheet in sheets)
+                    if (string.Equals(sheet.Name, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        CellState cell;
+                        return sheet.Cells.TryGetValue(row * ColumnCount + column, out cell) ?
+                            Convert.ToString(cell.Value) ?? "" : "";
+                    }
+                return null;
+            }, sheets.Count > activeSheetIndex ? sheets[activeSheetIndex].Name : "Sheet1",
+                RowCount, ColumnCount);
             for (int row = 0; row < RowCount; row++)
             {
                 for (int column = 0; column < ColumnCount; column++)
@@ -508,6 +592,20 @@ namespace DinkCel
                 e.Value = result;
                 e.FormattingApplied = true;
             }
+            string raw = result ?? Convert.ToString(grid[e.ColumnIndex, e.RowIndex].Value) ?? "";
+            string format = grid[e.ColumnIndex, e.RowIndex].Style.Format;
+            double numeric;
+            if (!string.IsNullOrEmpty(format) &&
+                double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out numeric))
+            {
+                try { e.Value = numeric.ToString(format, CultureInfo.CurrentCulture); e.FormattingApplied = true; }
+                catch (FormatException) { }
+            }
+            foreach (ConditionalRule rule in conditionalRules)
+                if (rule.Range.Contains(e.ColumnIndex, e.RowIndex) &&
+                    double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out numeric) &&
+                    numeric > rule.Threshold)
+                    e.CellStyle.BackColor = rule.Color;
         }
 
         private void GridEditingControlShowing(object sender,
@@ -721,6 +819,10 @@ namespace DinkCel
                 return;
             }
 
+            foreach (Rectangle merge in merges)
+                if (merge.Contains(e.ColumnIndex, e.RowIndex))
+                { e.Handled = true; return; }
+
             if (grid.CurrentCell != null &&
                 e.RowIndex == grid.CurrentCell.RowIndex &&
                 e.ColumnIndex == grid.CurrentCell.ColumnIndex)
@@ -803,6 +905,13 @@ namespace DinkCel
         private SheetState CaptureSheet()
         {
             var state = new SheetState();
+            state.Name = sheets.Count > activeSheetIndex ? sheets[activeSheetIndex].Name : "Sheet1";
+            state.Merges.AddRange(merges);
+            state.Rules.AddRange(conditionalRules);
+            state.FreezeRow = freezeRow;
+            state.FreezeColumn = freezeColumn;
+            state.FilterColumn = filterColumn;
+            state.FilterValue = filterValue;
             state.Background = sheetBackground;
             state.ThemeId = theme.Id;
             state.CsvRows = csvDocument == null ? 0 : csvDocument.DataRows;
@@ -833,7 +942,8 @@ namespace DinkCel
         {
             return style != null && (style.Font != null ||
                 !style.ForeColor.IsEmpty || !style.BackColor.IsEmpty ||
-                style.Alignment != DataGridViewContentAlignment.NotSet);
+                style.Alignment != DataGridViewContentAlignment.NotSet ||
+                !string.IsNullOrEmpty(style.Format));
         }
 
         private void ResetHistory()
@@ -844,6 +954,10 @@ namespace DinkCel
             savedRevision = 0;
             lastState = CaptureSheet();
             lastState.RevisionId = 0;
+            sheetHistories.Clear();
+            for (int i = 0; i < sheets.Count; i++) sheetHistories.Add(new SheetHistory());
+            if (sheetHistories.Count > activeSheetIndex)
+                sheetHistories[activeSheetIndex].Last = lastState;
         }
 
         private void RecordChange()
@@ -888,6 +1002,16 @@ namespace DinkCel
                     grid.Rows[row].Height = state.RowHeights[row];
                 for (int column = 0; column < ColumnCount; column++)
                     grid.Columns[column].Width = state.ColumnWidths[column];
+                merges.Clear();
+                merges.AddRange(state.Merges);
+                UpdateMergedReadOnly();
+                conditionalRules.Clear();
+                conditionalRules.AddRange(state.Rules);
+                freezeRow = state.FreezeRow;
+                freezeColumn = state.FreezeColumn;
+                filterColumn = state.FilterColumn;
+                filterValue = state.FilterValue;
+                ApplyFreezeAndFilter();
                 if (csvDocument != null)
                 {
                     csvDocument.DataRows = state.CsvRows;
@@ -904,7 +1028,7 @@ namespace DinkCel
                 loading = false;
             }
             Recalculate();
-            dirty = state.RevisionId != savedRevision;
+            dirty = state.RevisionId != savedRevision || otherSheetsDirty;
             saveIndicator.Text = dirty ? "Chưa lưu" :
                 currentPath == null ? "" : "Đã lưu trên máy";
             UpdateTitle();
@@ -995,10 +1119,21 @@ namespace DinkCel
             if (!ConfirmDiscardChanges())
                 return;
             ClearGrid();
+            sheets.Clear();
+            sheets.Add(new SheetState { Name = "Sheet1" });
+            activeSheetIndex = 0;
+            merges.Clear();
+            UpdateMergedReadOnly();
+            conditionalRules.Clear();
+            freezeRow = freezeColumn = 0;
+            filterColumn = -1;
+            filterValue = "";
+            RefreshSheetTabs();
             ApplySheetBackground(theme.Sheet, false);
             currentPath = null;
             csvDocument = null;
             dirty = false;
+            otherSheetsDirty = false;
             status.Text = "Bảng tính mới";
             Recalculate();
             UpdateTitle();
@@ -1011,7 +1146,7 @@ namespace DinkCel
                 return;
             using (var dialog = new OpenFileDialog())
             {
-                dialog.Filter = "DinkCel và CSV (*.dinkcel;*.csv)|*.dinkcel;*.csv|DinkCel (*.dinkcel)|*.dinkcel|CSV (*.csv)|*.csv";
+                dialog.Filter = "Spreadsheet (*.dinkcel;*.xlsx;*.csv)|*.dinkcel;*.xlsx;*.csv|DinkCel (*.dinkcel)|*.dinkcel|Excel (*.xlsx)|*.xlsx|CSV (*.csv)|*.csv";
                 if (dialog.ShowDialog(this) != DialogResult.OK)
                     return;
                 OpenPath(dialog.FileName);
@@ -1025,34 +1160,34 @@ namespace DinkCel
                     bool isCsv = string.Equals(Path.GetExtension(path), ".csv",
                         StringComparison.OrdinalIgnoreCase);
                     CsvDocument csv = null;
-                    WorkbookSnapshot workbook = isCsv ? ReadCsvWorkbook(path, out csv) : ReadWorkbook(path);
+                    WorkbookSnapshot workbook = isCsv ? ReadCsvWorkbook(path, out csv) :
+                        string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) ?
+                        XlsxFile.Read(path, RowCount, ColumnCount) : ReadWorkbook(path);
                     ClearGrid();
                     ThemePalette savedTheme = ThemePalette.Find(workbook.ThemeId);
                     if (savedTheme != null)
                         ApplyTheme(savedTheme, false, true);
                     if (workbook.HasBackground)
                         ApplySheetBackground(workbook.Background, false);
-                    loading = true;
-                    foreach (KeyValuePair<int, CellSnapshot> item in workbook.Cells)
+                    sheets.Clear();
+                    foreach (SheetSnapshot snapshot in workbook.Sheets)
                     {
-                        DataGridViewCell cell =
-                            grid[item.Key % ColumnCount, item.Key / ColumnCount];
-                        CellSnapshot value = item.Value;
-                        cell.Value = value.Text;
-                        if (value.HasFont)
-                            cell.Style.Font = new Font(grid.Font.FontFamily,
-                                value.FontSize, value.FontStyle);
-                        if (!value.ForeColor.IsEmpty)
-                            cell.Style.ForeColor = value.ForeColor;
-                        if (!value.BackColor.IsEmpty)
-                            cell.Style.BackColor = value.BackColor;
-                        if (value.Alignment != DataGridViewContentAlignment.NotSet)
-                            cell.Style.Alignment = value.Alignment;
+                        SheetState state = StateFromSnapshot(snapshot);
+                        state.Background = snapshot.Background.IsEmpty ?
+                            workbook.HasBackground ? workbook.Background : theme.Sheet : snapshot.Background;
+                        state.ThemeId = snapshot.ThemeId ?? workbook.ThemeId ?? theme.Id;
+                        if (csv != null) { state.CsvRows = csv.DataRows; state.CsvColumns = csv.DataColumns; }
+                        sheets.Add(state);
                     }
-                    loading = false;
-                    currentPath = path;
+                    if (sheets.Count == 0)
+                        sheets.Add(new SheetState { Name = "Sheet1" });
+                    activeSheetIndex = 0;
                     csvDocument = csv;
+                    RestoreSheet(sheets[0]);
+                    RefreshSheetTabs();
+                    currentPath = path;
                     dirty = false;
+                    otherSheetsDirty = false;
                     Recalculate();
                     UpdateSelection();
                     UpdateTitle();
@@ -1070,6 +1205,7 @@ namespace DinkCel
         private static WorkbookSnapshot ReadCsvWorkbook(string path, out CsvDocument csv)
         {
             var workbook = new WorkbookSnapshot();
+            workbook.Sheets[0].Name = Path.GetFileNameWithoutExtension(path);
             csv = CsvFile.ReadDocument(path, RowCount, ColumnCount);
             IList<string[]> rows = csv.Rows;
             for (int row = 0; row < rows.Count; row++)
@@ -1095,7 +1231,46 @@ namespace DinkCel
                 workbook.Background = ColorTranslator.FromHtml(background.Value);
                 workbook.HasBackground = true;
             }
-            foreach (XElement element in document.Root.Elements("cell"))
+            List<XElement> sheetElements = new List<XElement>(document.Root.Elements("sheet"));
+            if (sheetElements.Count > 0)
+            {
+                workbook.Sheets.Clear();
+                foreach (XElement sheetElement in sheetElements)
+                {
+                    var sheet = new SheetSnapshot();
+                    sheet.Name = (string)sheetElement.Attribute("name") ?? "Sheet" + (workbook.Sheets.Count + 1);
+                    sheet.ThemeId = (string)sheetElement.Attribute("theme");
+                    XAttribute sheetBackground = sheetElement.Attribute("background");
+                    if (sheetBackground != null)
+                        sheet.Background = ColorTranslator.FromHtml(sheetBackground.Value);
+                    sheet.FreezeRow = (int?)sheetElement.Attribute("freezeRow") ?? 0;
+                    sheet.FreezeColumn = (int?)sheetElement.Attribute("freezeColumn") ?? 0;
+                    sheet.FilterColumn = (int?)sheetElement.Attribute("filterColumn") ?? -1;
+                    sheet.FilterValue = (string)sheetElement.Attribute("filterValue") ?? "";
+                    foreach (XElement merge in sheetElement.Elements("merge"))
+                        sheet.Merges.Add(new Rectangle((int)merge.Attribute("column"),
+                            (int)merge.Attribute("row"), (int)merge.Attribute("width"),
+                            (int)merge.Attribute("height")));
+                    foreach (XElement rule in sheetElement.Elements("conditional"))
+                        sheet.Rules.Add(new ConditionalRule { Range = new Rectangle((int)rule.Attribute("column"),
+                            (int)rule.Attribute("row"), (int)rule.Attribute("width"), (int)rule.Attribute("height")),
+                            Threshold = (double)rule.Attribute("threshold"), Color = ColorTranslator.FromHtml((string)rule.Attribute("color")) });
+                    foreach (XElement dimension in sheetElement.Elements("row"))
+                        sheet.RowHeights[(int)dimension.Attribute("index")] = (int)dimension.Attribute("height");
+                    foreach (XElement dimension in sheetElement.Elements("column"))
+                        sheet.ColumnWidths[(int)dimension.Attribute("index")] = (int)dimension.Attribute("width");
+                    ReadCells(sheetElement.Elements("cell"), sheet.Cells);
+                    workbook.Sheets.Add(sheet);
+                }
+                return workbook;
+            }
+            ReadCells(document.Root.Elements("cell"), workbook.Cells);
+            return workbook;
+        }
+
+        private static void ReadCells(IEnumerable<XElement> elements, Dictionary<int, CellSnapshot> cells)
+        {
+            foreach (XElement element in elements)
             {
                 int row = int.Parse(element.Attribute("row").Value) - 1;
                 int column = int.Parse(element.Attribute("column").Value) - 1;
@@ -1135,9 +1310,9 @@ namespace DinkCel
                 if (align != null)
                     snapshot.Alignment = (DataGridViewContentAlignment)Enum.Parse(
                         typeof(DataGridViewContentAlignment), align.Value);
-                workbook.Cells[row * ColumnCount + column] = snapshot;
+                snapshot.NumberFormat = (string)element.Attribute("numberFormat") ?? "";
+                cells[row * ColumnCount + column] = snapshot;
             }
-            return workbook;
         }
 
         private bool SaveDocument()
@@ -1155,19 +1330,17 @@ namespace DinkCel
             using (var dialog = new SaveFileDialog())
             {
                 bool csv = IsCsvPath(currentPath);
-                dialog.Filter = csv ?
-                    "CSV (*.csv)|*.csv|DinkCel (*.dinkcel)|*.dinkcel" :
-                    "DinkCel (*.dinkcel)|*.dinkcel|CSV (*.csv)|*.csv";
+                dialog.Filter = "DinkCel (*.dinkcel)|*.dinkcel|Excel (*.xlsx)|*.xlsx|CSV (*.csv)|*.csv";
                 dialog.DefaultExt = csv ? "csv" : "dinkcel";
+                dialog.FilterIndex = csv ? 3 : 1;
                 dialog.AddExtension = false;
                 dialog.OverwritePrompt = false;
                 dialog.FileName = currentPath == null ? "BangTinh" :
                     Path.GetFileNameWithoutExtension(currentPath);
                 if (dialog.ShowDialog(this) != DialogResult.OK)
                     return false;
-                bool selectedCsv = csv ? dialog.FilterIndex == 1 : dialog.FilterIndex == 2;
                 string path = Path.ChangeExtension(dialog.FileName,
-                    selectedCsv ? ".csv" : ".dinkcel");
+                    dialog.FilterIndex == 3 ? ".csv" : dialog.FilterIndex == 2 ? ".xlsx" : ".dinkcel");
                 if (File.Exists(path) && MessageBox.Show(this,
                     "Tệp đã tồn tại. Bạn muốn ghi đè không?", "DinkCel",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
@@ -1184,13 +1357,21 @@ namespace DinkCel
 
         private bool WriteDocument(string path)
         {
-            return IsCsvPath(path) ? WriteCsv(path) : WriteWorkbook(path);
+            return IsCsvPath(path) ? WriteCsv(path) :
+                string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) ?
+                WriteXlsx(path) : WriteWorkbook(path);
         }
 
         private bool WriteCsv(string path)
         {
             try
             {
+                if (sheets.Count > 1)
+                {
+                    MessageBox.Show(this, "CSV chỉ lưu được một sheet. Hãy dùng Lưu thành và chọn .xlsx hoặc .dinkcel.",
+                        "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return false;
+                }
                 grid.EndEdit();
                 int rows = csvDocument == null ? 0 : csvDocument.DataRows;
                 int columns = csvDocument == null ? 0 : csvDocument.DataColumns;
@@ -1226,9 +1407,11 @@ namespace DinkCel
                 };
                 currentPath = path;
                 dirty = false;
+                otherSheetsDirty = false;
                 lastState = CaptureSheet();
                 lastState.RevisionId = nextRevision;
                 savedRevision = nextRevision;
+                MarkAllHistoriesSaved();
                 UpdateTitle();
                 status.Text = "Đã lưu " + Path.GetFileName(path) + " (CSV chỉ lưu dữ liệu ô)";
                 return true;
@@ -1246,53 +1429,24 @@ namespace DinkCel
             try
             {
                 grid.EndEdit();
+                SaveActiveSheet();
                 var root = new XElement("workbook",
                     new XAttribute("rows", RowCount),
                     new XAttribute("columns", ColumnCount),
                     new XAttribute("theme", theme.Id),
                     new XAttribute("background",
                         ColorTranslator.ToHtml(sheetBackground)));
-                for (int row = 0; row < RowCount; row++)
-                {
-                    for (int column = 0; column < ColumnCount; column++)
-                    {
-                        DataGridViewCell cell = grid[column, row];
-                        string value = Convert.ToString(cell.Value) ?? "";
-                        DataGridViewCellStyle style = cell.HasStyle ? cell.Style : null;
-                        bool hasStyle = style != null &&
-                            (style.Font != null || !style.ForeColor.IsEmpty ||
-                             !style.BackColor.IsEmpty ||
-                             style.Alignment != DataGridViewContentAlignment.NotSet);
-                        if (value.Length == 0 && !hasStyle)
-                            continue;
-                        var entry = new XElement("cell",
-                            new XAttribute("row", row + 1),
-                            new XAttribute("column", column + 1), value);
-                        if (style != null && style.Font != null)
-                        {
-                            entry.SetAttributeValue("fontStyle", (int)style.Font.Style);
-                            entry.SetAttributeValue("fontSize",
-                                style.Font.Size.ToString(CultureInfo.InvariantCulture));
-                        }
-                        if (style != null && !style.ForeColor.IsEmpty)
-                            entry.SetAttributeValue("fore",
-                                ColorTranslator.ToHtml(style.ForeColor));
-                        if (style != null && !style.BackColor.IsEmpty)
-                            entry.SetAttributeValue("back",
-                                ColorTranslator.ToHtml(style.BackColor));
-                        if (style != null &&
-                            style.Alignment != DataGridViewContentAlignment.NotSet)
-                            entry.SetAttributeValue("align", style.Alignment.ToString());
-                        root.Add(entry);
-                    }
-                }
+                foreach (SheetState state in sheets)
+                    root.Add(SerializeSheet(SnapshotFromState(state)));
                 new XDocument(root).Save(path);
                 currentPath = path;
                 csvDocument = null;
                 dirty = false;
+                otherSheetsDirty = false;
                 lastState = CaptureSheet();
                 lastState.RevisionId = nextRevision;
                 savedRevision = nextRevision;
+                MarkAllHistoriesSaved();
                 UpdateTitle();
                 status.Text = "Đã lưu " + Path.GetFileName(path);
                 return true;
@@ -1373,7 +1527,24 @@ namespace DinkCel
         private void CopySelected()
         {
             if (grid.SelectedCells.Count > 0)
+            {
                 Clipboard.SetDataObject(grid.GetClipboardContent());
+                copiedClipboardText = Clipboard.ContainsText() ? Clipboard.GetText() : null;
+                int left = grid.SelectedCells.Cast<DataGridViewCell>().Min(c => c.ColumnIndex);
+                int right = grid.SelectedCells.Cast<DataGridViewCell>().Max(c => c.ColumnIndex);
+                int top = grid.SelectedCells.Cast<DataGridViewCell>().Min(c => c.RowIndex);
+                int bottom = grid.SelectedCells.Cast<DataGridViewCell>().Max(c => c.RowIndex);
+                copiedCells = new CellState[bottom - top + 1, right - left + 1];
+                copiedDisplays = new string[bottom - top + 1, right - left + 1];
+                for (int r = top; r <= bottom; r++)
+                    for (int c = left; c <= right; c++)
+                    {
+                        var cell = grid[c, r];
+                        copiedCells[r - top, c - left] = new CellState
+                        { Value = cell.Value, Style = new DataGridViewCellStyle(cell.Style) };
+                        copiedDisplays[r - top, c - left] = Convert.ToString(cell.FormattedValue) ?? "";
+                    }
+            }
         }
 
         private void ClearSelectedCells()
@@ -1901,6 +2072,13 @@ namespace DinkCel
 
         private void GridKeyDown(object sender, KeyEventArgs e)
         {
+            if (e.Control && e.KeyCode == Keys.C && !grid.IsCurrentCellInEditMode)
+            {
+                CopySelected();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
             if (e.KeyCode == Keys.Delete && !grid.IsCurrentCellInEditMode)
             {
                 ClearSelectedCells();

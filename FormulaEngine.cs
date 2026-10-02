@@ -9,14 +9,23 @@ namespace DinkCel
     internal sealed class FormulaEngine
     {
         private readonly Func<int, int, string> readCell;
+        private readonly Func<string, int, int, string> readOtherSheet;
+        private readonly string currentSheet;
         private readonly int rowCount;
         private readonly int columnCount;
-        private readonly Dictionary<int, Value> cache = new Dictionary<int, Value>();
-        private readonly HashSet<int> active = new HashSet<int>();
+        private readonly Dictionary<string, Value> cache = new Dictionary<string, Value>();
+        private readonly HashSet<string> active = new HashSet<string>();
 
         public FormulaEngine(Func<int, int, string> readCell, int rowCount, int columnCount)
+            : this(readCell, null, "", rowCount, columnCount) { }
+
+        public FormulaEngine(Func<int, int, string> readCell,
+            Func<string, int, int, string> readOtherSheet, string currentSheet,
+            int rowCount, int columnCount)
         {
             this.readCell = readCell;
+            this.readOtherSheet = readOtherSheet;
+            this.currentSheet = currentSheet ?? "";
             this.rowCount = rowCount;
             this.columnCount = columnCount;
         }
@@ -37,9 +46,14 @@ namespace DinkCel
 
         private Value EvaluateCell(int row, int column)
         {
+            return EvaluateCell(currentSheet, row, column);
+        }
+
+        private Value EvaluateCell(string sheet, int row, int column)
+        {
             if (row < 0 || row >= rowCount || column < 0 || column >= columnCount)
                 return Value.Error("#REF!");
-            int key = row * columnCount + column;
+            string key = sheet.ToUpperInvariant() + "!" + (row * columnCount + column);
             Value cached;
             if (cache.TryGetValue(key, out cached))
                 return cached;
@@ -50,9 +64,11 @@ namespace DinkCel
             Value result;
             try
             {
-                string raw = readCell(row, column) ?? "";
+                string raw = string.Equals(sheet, currentSheet, StringComparison.OrdinalIgnoreCase) ?
+                    readCell(row, column) : readOtherSheet == null ? null : readOtherSheet(sheet, row, column);
+                if (raw == null) return Value.Error("#REF!");
                 if (raw.StartsWith("=", StringComparison.Ordinal))
-                    result = new Parser(this, raw.Substring(1)).Parse().Evaluate(this);
+                    result = new Parser(this, raw.Substring(1), sheet).Parse().Evaluate(this);
                 else if (raw.Length == 0)
                     result = Value.Blank();
                 else
@@ -141,27 +157,31 @@ namespace DinkCel
 
         private sealed class ReferenceNode : Node
         {
+            private readonly string sheet;
             private readonly int row;
             private readonly int column;
-            public ReferenceNode(int row, int column)
+            public ReferenceNode(string sheet, int row, int column)
             {
+                this.sheet = sheet;
                 this.row = row;
                 this.column = column;
             }
             public override Value Evaluate(FormulaEngine engine)
             {
-                return engine.EvaluateCell(row, column);
+                return engine.EvaluateCell(sheet, row, column);
             }
         }
 
         private sealed class RangeNode : Node
         {
+            private readonly string sheet;
             private readonly int firstRow;
             private readonly int firstColumn;
             private readonly int lastRow;
             private readonly int lastColumn;
-            public RangeNode(int firstRow, int firstColumn, int lastRow, int lastColumn)
+            public RangeNode(string sheet, int firstRow, int firstColumn, int lastRow, int lastColumn)
             {
+                this.sheet = sheet;
                 this.firstRow = firstRow;
                 this.firstColumn = firstColumn;
                 this.lastRow = lastRow;
@@ -175,7 +195,7 @@ namespace DinkCel
                 {
                     for (int column = Math.Min(firstColumn, lastColumn);
                         column <= Math.Max(firstColumn, lastColumn); column++)
-                        items.Add(engine.EvaluateCell(row, column));
+                        items.Add(engine.EvaluateCell(sheet, row, column));
                 }
                 return Value.Range(items);
             }
@@ -285,8 +305,101 @@ namespace DinkCel
                         ? numeric.Number != 0 : condition.Text.Length != 0;
                     return arguments[yes ? 1 : 2].Evaluate(engine);
                 }
+                if (name == "NOT" && arguments.Count == 1)
+                {
+                    Value value = AsNumber(arguments[0].Evaluate(engine));
+                    return value.Kind == ValueKind.Error ? value : Value.Numeric(value.Number == 0 ? 1 : 0);
+                }
+                if ((name == "AND" || name == "OR") && arguments.Count > 0)
+                {
+                    bool answer = name == "AND";
+                    foreach (Node argument in arguments)
+                    {
+                        Value value = AsNumber(argument.Evaluate(engine));
+                        if (value.Kind == ValueKind.Error) return value;
+                        if (name == "AND") answer &= value.Number != 0;
+                        else answer |= value.Number != 0;
+                    }
+                    return Value.Numeric(answer ? 1 : 0);
+                }
+                if (name == "ABS" || name == "SQRT" || name == "INT" ||
+                    name == "ROUND" || name == "ROUNDUP" || name == "ROUNDDOWN" ||
+                    name == "POWER" || name == "MOD")
+                {
+                    int required = name == "ROUND" || name == "ROUNDUP" || name == "ROUNDDOWN" || name == "POWER" || name == "MOD" ? 2 : 1;
+                    if (arguments.Count != required) return Value.Error("#ERROR!");
+                    Value a = AsNumber(arguments[0].Evaluate(engine));
+                    if (a.Kind == ValueKind.Error) return a;
+                    Value b = required == 2 ? AsNumber(arguments[1].Evaluate(engine)) : Value.Numeric(0);
+                    if (b.Kind == ValueKind.Error) return b;
+                    if (name == "ABS") return Value.Numeric(Math.Abs(a.Number));
+                    if (name == "SQRT") return a.Number < 0 ? Value.Error("#NUM!") : Value.Numeric(Math.Sqrt(a.Number));
+                    if (name == "INT") return Value.Numeric(Math.Floor(a.Number));
+                    if (name == "POWER") return Value.Numeric(Math.Pow(a.Number, b.Number));
+                    if (name == "MOD") return b.Number == 0 ? Value.Error("#DIV/0!") : Value.Numeric(a.Number - b.Number * Math.Floor(a.Number / b.Number));
+                    int digits = (int)b.Number;
+                    if (digits < -15 || digits > 15) return Value.Error("#NUM!");
+                    double scale = Math.Pow(10, digits);
+                    double scaled = a.Number * scale;
+                    if (name == "ROUNDUP") return Value.Numeric(Math.Sign(scaled) * Math.Ceiling(Math.Abs(scaled)) / scale);
+                    if (name == "ROUNDDOWN") return Value.Numeric(Math.Truncate(scaled) / scale);
+                    return Value.Numeric(Math.Round(scaled, 0, MidpointRounding.AwayFromZero) / scale);
+                }
+                if (name == "LEN" || name == "UPPER" || name == "LOWER" || name == "TRIM" || name == "LEFT" || name == "RIGHT")
+                {
+                    int required = name == "LEFT" || name == "RIGHT" ? 2 : 1;
+                    if (arguments.Count != required) return Value.Error("#ERROR!");
+                    Value a = arguments[0].Evaluate(engine);
+                    if (a.Kind == ValueKind.Error) return a;
+                    string value = a.Kind == ValueKind.Number ? a.Number.ToString(CultureInfo.InvariantCulture) : a.Text;
+                    if (name == "LEN") return Value.Numeric(value.Length);
+                    if (name == "UPPER") return Value.String(value.ToUpperInvariant());
+                    if (name == "LOWER") return Value.String(value.ToLowerInvariant());
+                    if (name == "TRIM") return Value.String(Regex.Replace(value.Trim(), @"\s+", " "));
+                    Value length = AsNumber(arguments[1].Evaluate(engine));
+                    if (length.Kind == ValueKind.Error) return length;
+                    int textLength = (int)length.Number;
+                    if (textLength < 0) return Value.Error("#VALUE!");
+                    textLength = Math.Min(textLength, value.Length);
+                    return Value.String(name == "LEFT" ? value.Substring(0, textLength) : value.Substring(value.Length - textLength));
+                }
+                if (name == "CONCAT" || name == "CONCATENATE")
+                {
+                    var builder = new StringBuilder();
+                    foreach (Node argument in arguments)
+                    {
+                        Value value = argument.Evaluate(engine);
+                        if (value.Kind == ValueKind.Error) return value;
+                        foreach (Value item in value.Kind == ValueKind.Range ? value.Items : new List<Value> { value })
+                            builder.Append(item.Kind == ValueKind.Number ? item.Number.ToString(CultureInfo.InvariantCulture) : item.Text);
+                    }
+                    return Value.String(builder.ToString());
+                }
+                if (name == "COUNTIF" || name == "SUMIF")
+                {
+                    if (arguments.Count < 2 || arguments.Count > (name == "SUMIF" ? 3 : 2)) return Value.Error("#ERROR!");
+                    Value source = arguments[0].Evaluate(engine);
+                    Value criterion = arguments[1].Evaluate(engine);
+                    if (source.Kind == ValueKind.Error) return source;
+                    if (criterion.Kind == ValueKind.Error) return criterion;
+                    var items = source.Kind == ValueKind.Range ? source.Items : new List<Value> { source };
+                    Value sums = name == "SUMIF" && arguments.Count == 3 ? arguments[2].Evaluate(engine) : source;
+                    if (sums.Kind == ValueKind.Error) return sums;
+                    var sumItems = sums.Kind == ValueKind.Range ? sums.Items : new List<Value> { sums };
+                    if (sumItems.Count != items.Count) return Value.Error("#VALUE!");
+                    double matchedSum = 0;
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        if (items[i].Kind == ValueKind.Error) return items[i];
+                        if (!MatchesCriterion(items[i], criterion)) continue;
+                        if (name == "COUNTIF") matchedSum++;
+                        else if (sumItems[i].Kind == ValueKind.Number) matchedSum += sumItems[i].Number;
+                    }
+                    return Value.Numeric(matchedSum);
+                }
                 if (name != "SUM" && name != "AVERAGE" &&
-                    name != "MIN" && name != "MAX" && name != "COUNT")
+                    name != "MIN" && name != "MAX" && name != "COUNT" &&
+                    name != "COUNTA" && name != "MEDIAN")
                     return Value.Error("#NAME?");
 
                 var values = new List<Value>();
@@ -302,19 +415,31 @@ namespace DinkCel
                 double total = 0;
                 double minimum = Double.PositiveInfinity;
                 double maximum = Double.NegativeInfinity;
+                var numericValues = new List<double>();
+                int nonempty = 0;
                 foreach (Value value in values)
                 {
                     if (value.Kind == ValueKind.Error)
                         return value;
+                    if (value.Kind != ValueKind.Blank && (value.Kind != ValueKind.Text || value.Text.Length > 0)) nonempty++;
                     if (value.Kind != ValueKind.Number)
                         continue;
                     count++;
+                    numericValues.Add(value.Number);
                     total += value.Number;
                     minimum = Math.Min(minimum, value.Number);
                     maximum = Math.Max(maximum, value.Number);
                 }
                 if (name == "COUNT")
                     return Value.Numeric(count);
+                if (name == "COUNTA") return Value.Numeric(nonempty);
+                if (name == "MEDIAN")
+                {
+                    if (count == 0) return Value.Error("#NUM!");
+                    numericValues.Sort();
+                    return Value.Numeric(count % 2 == 1 ? numericValues[count / 2] :
+                        (numericValues[count / 2 - 1] + numericValues[count / 2]) / 2);
+                }
                 if (name == "SUM")
                     return Value.Numeric(total);
                 if (name == "AVERAGE")
@@ -324,18 +449,38 @@ namespace DinkCel
                     return Value.Numeric(count == 0 ? 0 : minimum);
                 return Value.Numeric(count == 0 ? 0 : maximum);
             }
+
+            private static bool MatchesCriterion(Value candidate, Value criterion)
+            {
+                string text = criterion.Kind == ValueKind.Number ? criterion.Number.ToString(CultureInfo.InvariantCulture) : criterion.Text;
+                string operation = "=";
+                foreach (string prefix in new[] { ">=", "<=", "<>", ">", "<", "=" })
+                    if (text.StartsWith(prefix, StringComparison.Ordinal))
+                    { operation = prefix; text = text.Substring(prefix.Length); break; }
+                double expected;
+                Value number = AsNumber(candidate);
+                int comparison = double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out expected) && number.Kind == ValueKind.Number
+                    ? number.Number.CompareTo(expected)
+                    : string.Compare(candidate.Kind == ValueKind.Number ? candidate.Number.ToString(CultureInfo.InvariantCulture) : candidate.Text,
+                        text, StringComparison.OrdinalIgnoreCase);
+                return operation == "=" ? comparison == 0 : operation == "<>" ? comparison != 0 :
+                    operation == ">" ? comparison > 0 : operation == "<" ? comparison < 0 :
+                    operation == ">=" ? comparison >= 0 : comparison <= 0;
+            }
         }
 
         private sealed class Parser
         {
             private readonly FormulaEngine engine;
             private readonly string source;
+            private readonly string sheet;
             private int position;
 
-            public Parser(FormulaEngine engine, string source)
+            public Parser(FormulaEngine engine, string source, string sheet)
             {
                 this.engine = engine;
                 this.source = source;
+                this.sheet = sheet;
             }
 
             public Node Parse()
@@ -414,9 +559,20 @@ namespace DinkCel
                 if (Char.IsDigit(source[position]) || source[position] == '.')
                     return new LiteralNode(Value.Numeric(ReadNumber()));
 
+                string explicitSheet = null;
+                if (source[position] == '\'')
+                {
+                    explicitSheet = ReadSheetName();
+                    Require("!");
+                }
                 string word = ReadWord();
                 if (word.Length == 0)
                     throw new FormatException();
+                if (explicitSheet == null && Take("!"))
+                {
+                    explicitSheet = word;
+                    word = ReadWord();
+                }
                 if (Take("("))
                 {
                     var arguments = new List<Node>();
@@ -442,9 +598,27 @@ namespace DinkCel
                     int lastRow, lastColumn;
                     if (!TryAddress(end, out lastRow, out lastColumn))
                         throw new FormatException();
-                    return new RangeNode(row, column, lastRow, lastColumn);
+                    return new RangeNode(explicitSheet ?? sheet, row, column, lastRow, lastColumn);
                 }
-                return new ReferenceNode(row, column);
+                return new ReferenceNode(explicitSheet ?? sheet, row, column);
+            }
+
+            private string ReadSheetName()
+            {
+                position++;
+                var name = new StringBuilder();
+                while (position < source.Length)
+                {
+                    char c = source[position++];
+                    if (c == '\'')
+                    {
+                        if (position < source.Length && source[position] == '\'')
+                        { name.Append('\''); position++; }
+                        else return name.ToString();
+                    }
+                    else name.Append(c);
+                }
+                throw new FormatException();
             }
 
             private string ReadWord()

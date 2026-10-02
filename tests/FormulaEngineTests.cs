@@ -41,6 +41,43 @@ namespace DinkCel
             Check("Arithmetic", "25", engine.Display(2, 2));
             Check("Division by zero", "#DIV/0!", engine.Display(0, 3));
             Check("Blank reference", "0", engine.Display(1, 3));
+            cells[4] = "=ROUND(12.345,2)";
+            cells[5] = "=MOD(-5,3)";
+            cells[6] = "=MEDIAN(A1:A2,30)";
+            cells[7] = "=COUNTA(A1:A2,Z200)";
+            cells[8] = "=LEFT(UPPER(\"abc\"),2)";
+            cells[9] = "=CONCAT(\"Hi\",\" \",RIGHT(\"there\",3))";
+            cells[10] = "=AND(A1>0,A2>0)";
+            cells[11] = "=SQRT(9)+ABS(-2)";
+            cells[14] = "=COUNTIF(A1:A2,\">15\")";
+            cells[15] = "=SUMIF(A1:A2,\">15\")";
+            var expanded = new FormulaEngine(read, 200, 26);
+            Check("ROUND", "12.35", expanded.Display(0, 4));
+            Check("MOD", "1", expanded.Display(0, 5));
+            Check("MEDIAN", "20", expanded.Display(0, 6));
+            Check("COUNTA", "2", expanded.Display(0, 7));
+            Check("LEFT UPPER", "AB", expanded.Display(0, 8));
+            Check("CONCAT RIGHT", "Hi ere", expanded.Display(0, 9));
+            Check("AND", "1", expanded.Display(0, 10));
+            Check("SQRT ABS", "5", expanded.Display(0, 11));
+            Check("COUNTIF", "1", expanded.Display(0, 14));
+            Check("SUMIF", "20", expanded.Display(0, 15));
+            cells[12] = "=SUM(Other!A1:A2)+'My Sheet'!B1";
+            cells[13] = "=Other!C1";
+            var otherCells = new Dictionary<int, string>();
+            otherCells[0] = "3";
+            otherCells[26] = "4";
+            otherCells[1] = "5";
+            otherCells[2] = "=Main!N1";
+            var multi = new FormulaEngine(read, delegate(string sheet, int row, int column)
+            {
+                string value;
+                if (sheet == "Other") return otherCells.TryGetValue(row * 26 + column, out value) ? value : "";
+                if (sheet == "My Sheet") return column == 1 && row == 0 ? "5" : "";
+                return null;
+            }, "Main", 200, 26);
+            Check("Cross-sheet references", "12", multi.Display(0, 12));
+            Check("Cross-sheet cycle", "#CYCLE!", multi.Display(0, 13));
             Check("Relative fill", "=SUM(B2:$B$2)+D4",
                 FormulaEngine.ShiftReferences("=SUM(A1:$B$2)+C3",
                     1, 1, 200, 26));
