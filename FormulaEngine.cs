@@ -723,6 +723,100 @@ namespace DinkCel
             return other > at ? at : at - 1;
         }
 
+        public static string MoveStructureReferences(string formula, bool rows,
+            int sourceIndex, int targetIndex)
+        {
+            if (String.IsNullOrEmpty(formula) || formula[0] != '=' ||
+                sourceIndex == targetIndex)
+                return formula;
+            var result = new StringBuilder();
+            int start = 0;
+            int cursor = 0;
+            while (cursor < formula.Length)
+            {
+                if (formula[cursor] != '"')
+                {
+                    cursor++;
+                    continue;
+                }
+                AppendMovedSegment(result, formula.Substring(start, cursor - start),
+                    rows, sourceIndex, targetIndex);
+                start = cursor++;
+                while (cursor < formula.Length)
+                {
+                    if (formula[cursor++] != '"')
+                        continue;
+                    if (cursor < formula.Length && formula[cursor] == '"')
+                        cursor++;
+                    else
+                        break;
+                }
+                result.Append(formula, start, cursor - start);
+                start = cursor;
+            }
+            AppendMovedSegment(result, formula.Substring(start),
+                rows, sourceIndex, targetIndex);
+            return result.ToString();
+        }
+
+        private static void AppendMovedSegment(StringBuilder result, string segment,
+            bool rows, int sourceIndex, int targetIndex)
+        {
+            result.Append(StructureReference.Replace(segment, delegate(Match match)
+            {
+                CellReference first;
+                if (!TryParseReference(match.Groups[1].Value, out first))
+                    return match.Value;
+                bool range = match.Groups[2].Success;
+                CellReference last = new CellReference();
+                if (range && !TryParseReference(match.Groups[2].Value, out last))
+                    return match.Value;
+                int firstAxis = rows ? first.Row : first.Column;
+                int lastAxis = rows ? last.Row : last.Column;
+                int firstNext = MapMovedIndex(firstAxis, sourceIndex, targetIndex);
+                int lastNext = 0;
+                if (range)
+                {
+                    int minimum = Int32.MaxValue;
+                    int maximum = 0;
+                    for (int value = Math.Min(firstAxis, lastAxis);
+                        value <= Math.Max(firstAxis, lastAxis); value++)
+                    {
+                        int moved = MapMovedIndex(value, sourceIndex, targetIndex);
+                        minimum = Math.Min(minimum, moved);
+                        maximum = Math.Max(maximum, moved);
+                    }
+                    firstNext = firstAxis <= lastAxis ? minimum : maximum;
+                    lastNext = firstAxis <= lastAxis ? maximum : minimum;
+                }
+                if (rows)
+                {
+                    first.Row = firstNext;
+                    last.Row = lastNext;
+                }
+                else
+                {
+                    first.Column = firstNext;
+                    last.Column = lastNext;
+                }
+                return FormatReference(first) +
+                    (range ? ":" + FormatReference(last) : "");
+            }));
+        }
+
+        private static int MapMovedIndex(int oneBased, int sourceIndex, int targetIndex)
+        {
+            int source = sourceIndex + 1;
+            int target = targetIndex + 1;
+            if (oneBased == source)
+                return target;
+            if (source < target && oneBased > source && oneBased <= target)
+                return oneBased - 1;
+            if (source > target && oneBased >= target && oneBased < source)
+                return oneBased + 1;
+            return oneBased;
+        }
+
         private struct CellReference
         {
             public int Row;

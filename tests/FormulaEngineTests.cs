@@ -64,6 +64,15 @@ namespace DinkCel
             Check("Delete column range", "=SUM(A1:B1)",
                 FormulaEngine.ShiftStructureReferences(
                     "=SUM(A1:C1)", false, 1, false, 200, 26));
+            Check("Move row references and range", "=A5+$B$3+SUM(A1:A5)+\"A2\"",
+                FormulaEngine.MoveStructureReferences(
+                    "=A2+$B$4+SUM(A1:A3)+\"A2\"", true, 1, 4));
+            Check("Move column references", "=B4+$C$1+SUM(B1:D1)",
+                FormulaEngine.MoveStructureReferences(
+                    "=D4+$B$1+SUM(B1:D1)", false, 3, 1));
+            Check("Move row upward", "=A2+A3+A5",
+                FormulaEngine.MoveStructureReferences(
+                    "=A5+A2+A4", true, 4, 1));
 
             cells[0] = "=B1";
             cells[1] = "=A1";

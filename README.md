@@ -12,11 +12,12 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.1.0
+## Tính năng v0.1.1
 
 - Lưới 200 hàng × 26 cột, địa chỉ ô từ A1 đến Z200; có cuộn dọc và ngang.
 - Nhập dữ liệu trực tiếp vào ô hoặc qua thanh nội dung phía trên; địa chỉ ô đang chọn hiện bên trái.
 - Bấm số hàng hoặc chữ cột để chọn nhanh toàn bộ hàng/cột. Nhấp chuột phải lên tiêu đề để chèn hoặc xóa hàng/cột; các lệnh này cũng có trong menu Chỉnh sửa.
+- Giữ chuột trái trên tiêu đề hàng/cột rồi kéo đến vị trí mới để di chuyển cả hàng/cột. Nội dung, định dạng, kích thước và tham chiếu công thức được cập nhật; Ctrl+Z/Ctrl+Y hoàn tác hoặc làm lại thao tác kéo.
 - Khi chèn/xóa, nội dung, định dạng và tham chiếu công thức được dịch theo vị trí mới. Bảng vẫn giới hạn 200 hàng × 26 cột; nếu hàng 200 hoặc cột Z đang chứa dữ liệu/định dạng, lệnh chèn sẽ dừng để tránh mất dữ liệu.
 - Sao chép và dán vùng ô dạng bảng bằng Ctrl+C / Ctrl+V.
 - Chọn nhiều ô rồi nhấn Delete để xóa toàn bộ nội dung vùng chọn. Ctrl+Z hoàn tác và Ctrl+Y làm lại thao tác nhập, xóa, dán, định dạng, kéo điền hoặc chèn/xóa hàng cột (tối đa 50 bước).

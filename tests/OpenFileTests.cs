@@ -30,6 +30,43 @@ namespace DinkCel
                     Equal("A,B", grid[0, 1].Value);
                     Equal("42", grid[1, 1].Value);
                     Equal(csv, Field(form, "currentPath"));
+                    Rectangle rowHeader = grid.GetCellDisplayRectangle(-1, 0, false);
+                    Rectangle dropRow = grid.GetCellDisplayRectangle(-1, 1, false);
+                    var leftClick = new MouseEventArgs(MouseButtons.Left, 1, 0, 0, 0);
+                    Invoke(form, "GridCellMouseDown", grid,
+                        new DataGridViewCellMouseEventArgs(-1, 0,
+                            rowHeader.Width / 2, rowHeader.Height / 2, leftClick));
+                    SetField(form, "headerStartPoint", new Point(
+                        rowHeader.Left + rowHeader.Width / 2,
+                        rowHeader.Top + rowHeader.Height / 2));
+                    var drop = new MouseEventArgs(MouseButtons.Left, 1,
+                        dropRow.Left + dropRow.Width / 2,
+                        dropRow.Top + dropRow.Height / 2, 0);
+                    Invoke(form, "GridMouseMove", grid, drop);
+                    Invoke(form, "GridMouseUp", grid, drop);
+                    Application.DoEvents();
+                    Equal("name", grid[0, 1].Value);
+                    Call(form, "Undo");
+                    Equal("name", grid[0, 0].Value);
+
+                    Rectangle columnHeader = grid.GetCellDisplayRectangle(1, -1, false);
+                    Rectangle dropColumn = grid.GetCellDisplayRectangle(2, -1, false);
+                    Invoke(form, "GridCellMouseDown", grid,
+                        new DataGridViewCellMouseEventArgs(1, -1,
+                            columnHeader.Width / 2, columnHeader.Height / 2, leftClick));
+                    SetField(form, "headerStartPoint", new Point(
+                        columnHeader.Left + columnHeader.Width / 2,
+                        columnHeader.Top + columnHeader.Height / 2));
+                    var dropColumnEvent = new MouseEventArgs(MouseButtons.Left, 1,
+                        dropColumn.Left + dropColumn.Width / 2,
+                        dropColumn.Top + dropColumn.Height / 2, 0);
+                    Invoke(form, "GridMouseMove", grid, dropColumnEvent);
+                    Invoke(form, "GridMouseUp", grid, dropColumnEvent);
+                    Application.DoEvents();
+                    Equal("42", grid[2, 1].Value);
+                    Call(form, "Undo");
+                    Equal("42", grid[1, 1].Value);
+
                     grid.ClearSelection();
                     grid[0, 1].Selected = true;
                     grid[1, 1].Selected = true;
@@ -57,6 +94,20 @@ namespace DinkCel
                     Call(form, "Undo");
                     grid[2, 1].Value = "=B2";
                     grid[0, 1].Style.BackColor = Color.Yellow;
+                    grid.Rows[1].Height = 39;
+                    Call(form, "MoveHeader", true, 1, 3);
+                    Equal("A,B", grid[0, 3].Value);
+                    Equal("42", grid[1, 3].Value);
+                    Equal("=B4", grid[2, 3].Value);
+                    Equal(Color.Yellow, grid[0, 3].Style.BackColor);
+                    Equal(39, grid.Rows[3].Height);
+                    Call(form, "Undo");
+                    Equal("A,B", grid[0, 1].Value);
+                    Equal("=B2", grid[2, 1].Value);
+                    Equal(39, grid.Rows[1].Height);
+                    Call(form, "Redo");
+                    Equal("A,B", grid[0, 3].Value);
+                    Call(form, "Undo");
                     Call(form, "SelectHeader", 1, true);
                     Equal(26, grid.SelectedCells.Count);
                     Call(form, "InsertRow");
@@ -75,6 +126,15 @@ namespace DinkCel
                     Equal("=B2", grid[2, 1].Value);
 
                     grid[3, 0].Value = "=$B$2";
+                    grid.Columns[1].Width = 151;
+                    Call(form, "MoveHeader", false, 1, 3);
+                    Equal("42", grid[3, 1].Value);
+                    Equal("=$D$2", grid[2, 0].Value);
+                    Equal(151, grid.Columns[3].Width);
+                    Call(form, "Undo");
+                    Equal("42", grid[1, 1].Value);
+                    Equal("=$B$2", grid[3, 0].Value);
+                    Equal(151, grid.Columns[1].Width);
                     Call(form, "SelectHeader", 1, false);
                     Equal(200, grid.SelectedCells.Count);
                     Call(form, "InsertColumn");
@@ -139,6 +199,12 @@ namespace DinkCel
         {
             return target.GetType().GetField(name,
                 BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
+        }
+
+        private static void SetField(object target, string name, object value)
+        {
+            target.GetType().GetField(name,
+                BindingFlags.Instance | BindingFlags.NonPublic).SetValue(target, value);
         }
 
         private static void Call(object target, string name, params object[] args)

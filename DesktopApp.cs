@@ -113,6 +113,13 @@ namespace DinkCel
         private bool syncingToolbar;
         private bool selectingHeader;
         private bool fillDragging;
+        private bool headerDragPending;
+        private bool headerDragging;
+        private bool headerDragRow;
+        private bool suppressHeaderClick;
+        private int headerSource;
+        private int headerTarget;
+        private Point headerStartPoint;
         private int fillSourceRow;
         private int fillSourceColumn;
         private int fillTargetRow;
@@ -392,6 +399,22 @@ namespace DinkCel
                     UpdateSelection();
                 }
             };
+            grid.RowHeightChanged += delegate
+            {
+                if (!loading && lastState != null)
+                {
+                    RecordChange();
+                    MarkDirty();
+                }
+            };
+            grid.ColumnWidthChanged += delegate
+            {
+                if (!loading && lastState != null)
+                {
+                    RecordChange();
+                    MarkDirty();
+                }
+            };
             grid.KeyDown += GridKeyDown;
             grid.CellMouseDown += GridCellMouseDown;
             grid.RowHeaderMouseClick += GridCellMouseClick;
@@ -669,6 +692,31 @@ namespace DinkCel
                 TextRenderer.DrawText(e.Graphics, text, HeaderFont, e.CellBounds,
                     active ? theme.Accent : theme.Muted,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                if (headerDragging &&
+                    ((headerDragRow && e.ColumnIndex == -1 &&
+                      e.RowIndex == headerTarget) ||
+                     (!headerDragRow && e.RowIndex == -1 &&
+                      e.ColumnIndex == headerTarget)))
+                {
+                    using (var marker = new Pen(theme.Accent, 3F))
+                    {
+                        if (headerDragRow)
+                            e.Graphics.DrawLine(marker, e.CellBounds.Left,
+                                headerSource < headerTarget ?
+                                    e.CellBounds.Bottom - 2 : e.CellBounds.Top + 1,
+                                e.CellBounds.Right,
+                                headerSource < headerTarget ?
+                                    e.CellBounds.Bottom - 2 : e.CellBounds.Top + 1);
+                        else
+                            e.Graphics.DrawLine(marker,
+                                headerSource < headerTarget ?
+                                    e.CellBounds.Right - 2 : e.CellBounds.Left + 1,
+                                e.CellBounds.Top,
+                                headerSource < headerTarget ?
+                                    e.CellBounds.Right - 2 : e.CellBounds.Left + 1,
+                                e.CellBounds.Bottom);
+                    }
+                }
                 e.Handled = true;
                 return;
             }
@@ -1395,6 +1443,8 @@ namespace DinkCel
 
         private void GridCellMouseClick(object sender, DataGridViewCellMouseEventArgs e)
         {
+            if (suppressHeaderClick)
+                return;
             if (e.RowIndex >= 0 && e.ColumnIndex == -1)
             {
                 SelectHeader(e.RowIndex, true);
@@ -1578,6 +1628,86 @@ namespace DinkCel
             grid.Columns[target].Width = grid.Columns[source].Width;
         }
 
+        private CellState CaptureCell(int column, int row)
+        {
+            DataGridViewCell cell = grid[column, row];
+            return new CellState
+            {
+                Value = cell.Value,
+                Style = cell.HasStyle ? new DataGridViewCellStyle(cell.Style) : null
+            };
+        }
+
+        private void RestoreCell(int column, int row, CellState saved)
+        {
+            DataGridViewCell cell = grid[column, row];
+            cell.Value = saved.Value;
+            cell.Style = saved.Style == null ? new DataGridViewCellStyle() :
+                new DataGridViewCellStyle(saved.Style);
+        }
+
+        private void MoveHeader(bool row, int source, int target)
+        {
+            int limit = row ? RowCount : ColumnCount;
+            if (source < 0 || source >= limit || target < 0 || target >= limit ||
+                source == target)
+                return;
+            grid.EndEdit();
+            int count = row ? ColumnCount : RowCount;
+            var held = new CellState[count];
+            for (int i = 0; i < count; i++)
+                held[i] = row ? CaptureCell(i, source) : CaptureCell(source, i);
+            int heldSize = row ? grid.Rows[source].Height :
+                grid.Columns[source].Width;
+
+            loading = true;
+            grid.SuspendLayout();
+            try
+            {
+                if (source < target)
+                    for (int index = source; index < target; index++)
+                    {
+                        if (row) CopyRow(index + 1, index);
+                        else CopyColumn(index + 1, index);
+                    }
+                else
+                    for (int index = source; index > target; index--)
+                    {
+                        if (row) CopyRow(index - 1, index);
+                        else CopyColumn(index - 1, index);
+                    }
+                for (int i = 0; i < count; i++)
+                {
+                    if (row) RestoreCell(i, target, held[i]);
+                    else RestoreCell(target, i, held[i]);
+                }
+                if (row) grid.Rows[target].Height = heldSize;
+                else grid.Columns[target].Width = heldSize;
+                for (int line = 0; line < RowCount; line++)
+                    for (int column = 0; column < ColumnCount; column++)
+                    {
+                        DataGridViewCell cell = grid[column, line];
+                        string raw = Convert.ToString(cell.Value) ?? "";
+                        if (raw.StartsWith("=", StringComparison.Ordinal))
+                            cell.Value = FormulaEngine.MoveStructureReferences(
+                                raw, row, source, target);
+                    }
+            }
+            finally
+            {
+                grid.ResumeLayout();
+                loading = false;
+            }
+            SelectHeader(target, row);
+            Recalculate();
+            RecordChange();
+            MarkDirty();
+            status.Text = row ?
+                "Đã chuyển hàng " + (source + 1) + " đến hàng " + (target + 1) :
+                "Đã chuyển cột " + (char)('A' + source) + " đến cột " +
+                    (char)('A' + target);
+        }
+
         private void ClearColumn(int column)
         {
             for (int row = 0; row < RowCount; row++)
@@ -1600,7 +1730,7 @@ namespace DinkCel
 
         private void GridCellMouseMove(object sender, DataGridViewCellMouseEventArgs e)
         {
-            if (fillDragging || grid.CurrentCell == null ||
+            if (headerDragPending || fillDragging || grid.CurrentCell == null ||
                 e.RowIndex != grid.CurrentCell.RowIndex ||
                 e.ColumnIndex != grid.CurrentCell.ColumnIndex)
                 return;
@@ -1612,6 +1742,25 @@ namespace DinkCel
 
         private void GridCellMouseDown(object sender, DataGridViewCellMouseEventArgs e)
         {
+            if (e.Button == MouseButtons.Left &&
+                ((e.RowIndex >= 0 && e.ColumnIndex == -1) ||
+                 (e.ColumnIndex >= 0 && e.RowIndex == -1)))
+            {
+                if (e.ColumnIndex == -1 &&
+                    e.Y >= grid.Rows[e.RowIndex].Height - 6)
+                    return;
+                if (e.RowIndex == -1 &&
+                    e.X >= grid.Columns[e.ColumnIndex].Width - 6)
+                    return;
+                headerDragPending = true;
+                headerDragging = false;
+                headerDragRow = e.ColumnIndex == -1;
+                headerSource = headerDragRow ? e.RowIndex : e.ColumnIndex;
+                headerTarget = headerSource;
+                headerStartPoint = grid.PointToClient(Control.MousePosition);
+                grid.Capture = true;
+                return;
+            }
             if (e.Button != MouseButtons.Left || grid.CurrentCell == null ||
                 e.RowIndex != grid.CurrentCell.RowIndex ||
                 e.ColumnIndex != grid.CurrentCell.ColumnIndex)
@@ -1631,6 +1780,29 @@ namespace DinkCel
 
         private void GridMouseMove(object sender, MouseEventArgs e)
         {
+            if (headerDragPending)
+            {
+                if ((e.Button & MouseButtons.Left) == 0)
+                    return;
+                if (!headerDragging &&
+                    Math.Abs(e.X - headerStartPoint.X) < 5 &&
+                    Math.Abs(e.Y - headerStartPoint.Y) < 5)
+                    return;
+                headerDragging = true;
+                grid.Cursor = headerDragRow ? Cursors.SizeNS : Cursors.SizeWE;
+                DataGridView.HitTestInfo targetHit = grid.HitTest(e.X, e.Y);
+                int target = headerDragRow ? targetHit.RowIndex :
+                    targetHit.ColumnIndex;
+                if (target >= 0 && target != headerTarget)
+                {
+                    headerTarget = target;
+                    status.Text = headerDragRow ?
+                        "Thả để chuyển đến hàng " + (target + 1) :
+                        "Thả để chuyển đến cột " + (char)('A' + target);
+                    grid.Invalidate();
+                }
+                return;
+            }
             if (!fillDragging)
                 return;
             DataGridView.HitTestInfo hit = grid.HitTest(e.X, e.Y);
@@ -1646,6 +1818,31 @@ namespace DinkCel
 
         private void GridMouseUp(object sender, MouseEventArgs e)
         {
+            if (headerDragPending)
+            {
+                DataGridView.HitTestInfo targetHit = grid.HitTest(e.X, e.Y);
+                int target = headerDragRow ? targetHit.RowIndex :
+                    targetHit.ColumnIndex;
+                bool move = headerDragging && target >= 0 &&
+                    target != headerSource;
+                int source = headerSource;
+                bool row = headerDragRow;
+                headerDragPending = false;
+                headerDragging = false;
+                grid.Capture = false;
+                grid.Cursor = Cursors.Default;
+                grid.Invalidate();
+                if (move)
+                {
+                    suppressHeaderClick = true;
+                    MoveHeader(row, source, target);
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        suppressHeaderClick = false;
+                    });
+                }
+                return;
+            }
             if (!fillDragging)
                 return;
             DataGridView.HitTestInfo hit = grid.HitTest(e.X, e.Y);
