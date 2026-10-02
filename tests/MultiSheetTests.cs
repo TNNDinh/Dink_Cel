@@ -29,9 +29,18 @@ namespace DinkCel
         [STAThread]
         private static void Main()
         {
+            try { Run(); }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(1); }
+        }
+
+        private static void Run()
+        {
+            EmbeddedDependencies.Install();
             Application.EnableVisualStyles();
             string path = Path.Combine(Path.GetTempPath(), "DinkCel_sheets_" + Guid.NewGuid().ToString("N") + ".dinkcel");
             string xlsx = Path.ChangeExtension(path, ".xlsx");
+            string xls = Path.ChangeExtension(path, ".xls");
+            string ods = Path.ChangeExtension(path, ".ods");
             try
             {
                 using (var form = new SpreadsheetForm(null))
@@ -83,6 +92,8 @@ namespace DinkCel
                     Equal(true, Call(form, "WriteWorkbook", path));
                     Equal(false, Field(form, "dirty"));
                     Equal(true, Call(form, "WriteXlsx", xlsx));
+                    Equal(true, Call(form, "WriteXls", xls));
+                    Equal(true, Call(form, "WriteOds", ods));
                     form.Close();
                 }
                 using (var reopened = new SpreadsheetForm(path))
@@ -109,9 +120,23 @@ namespace DinkCel
                     Equal("5", grid[1, 0].FormattedValue);
                     reopened.Close();
                 }
+                foreach (string file in new[] { xls, ods })
+                    using (var reopened = new SpreadsheetForm(file))
+                    {
+                        reopened.Show(); Application.DoEvents();
+                        var grid = (DataGridView)Field(reopened, "grid");
+                        Equal("First", grid[0, 0].Value);
+                        Call(reopened, "SwitchSheet", 1);
+                        Equal("Second", grid[0, 0].Value);
+                        reopened.Close();
+                    }
                 Console.WriteLine("Multi-sheet UI: .dinkcel and .xlsx passed.");
             }
-            finally { if (File.Exists(path)) File.Delete(path); if (File.Exists(xlsx)) File.Delete(xlsx); }
+            finally
+            {
+                foreach (string file in new[] { path, xlsx, xls, ods })
+                    if (File.Exists(file)) File.Delete(file);
+            }
         }
     }
 }

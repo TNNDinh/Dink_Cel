@@ -13,6 +13,12 @@ namespace DinkCel
 
         private static void Main()
         {
+            try { Run(); }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(1); }
+        }
+
+        private static void Run()
+        {
             var cells = new Dictionary<int, string>();
             cells[0] = "10";                    // A1
             cells[26] = "20";                   // A2
@@ -51,6 +57,7 @@ namespace DinkCel
             cells[11] = "=SQRT(9)+ABS(-2)";
             cells[14] = "=COUNTIF(A1:A2,\">15\")";
             cells[15] = "=SUMIF(A1:A2,\">15\")";
+            cells[16] = "=SUM(Revenue)";
             var expanded = new FormulaEngine(read, 200, 26);
             Check("ROUND", "12.35", expanded.Display(0, 4));
             Check("MOD", "1", expanded.Display(0, 5));
@@ -62,6 +69,13 @@ namespace DinkCel
             Check("SQRT ABS", "5", expanded.Display(0, 11));
             Check("COUNTIF", "1", expanded.Display(0, 14));
             Check("SUMIF", "20", expanded.Display(0, 15));
+            var names = new FormulaEngine(read, null, "Main", 200, 26,
+                delegate(string name)
+                {
+                    return name == "Revenue" ? new FormulaNamedRange
+                    { Sheet = "Main", FirstRow = 0, FirstColumn = 0, LastRow = 1, LastColumn = 0 } : null;
+                });
+            Check("Named range", "30", names.Display(0, 16));
             cells[12] = "=SUM(Other!A1:A2)+'My Sheet'!B1";
             cells[13] = "=Other!C1";
             var otherCells = new Dictionary<int, string>();

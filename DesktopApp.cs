@@ -15,6 +15,7 @@ namespace DinkCel
         [STAThread]
         private static void Main(string[] args)
         {
+            EmbeddedDependencies.Install();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new SpreadsheetForm(args.Length > 0 ? args[0] : null));
@@ -51,6 +52,8 @@ namespace DinkCel
     internal sealed class WorkbookSnapshot
     {
         public readonly List<SheetSnapshot> Sheets = new List<SheetSnapshot>();
+        public readonly List<NamedRange> NamedRanges = new List<NamedRange>();
+        public readonly List<PivotDefinition> Pivots = new List<PivotDefinition>();
         public Dictionary<int, CellSnapshot> Cells { get { return Sheets[0].Cells; } }
         public Color Background = Color.FromArgb(232, 240, 248);
         public bool HasBackground;
@@ -68,6 +71,9 @@ namespace DinkCel
         public readonly Dictionary<int, int> ColumnWidths = new Dictionary<int, int>();
         public readonly List<Rectangle> Merges = new List<Rectangle>();
         public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
+        public readonly List<TableDefinition> Tables = new List<TableDefinition>();
+        public readonly List<ChartDefinition> Charts = new List<ChartDefinition>();
+        public readonly List<ValidationRule> Validations = new List<ValidationRule>();
         public int FreezeRow;
         public int FreezeColumn;
         public int FilterColumn = -1;
@@ -79,6 +85,9 @@ namespace DinkCel
         public string Name = "Sheet1";
         public readonly List<Rectangle> Merges = new List<Rectangle>();
         public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
+        public readonly List<TableDefinition> Tables = new List<TableDefinition>();
+        public readonly List<ChartDefinition> Charts = new List<ChartDefinition>();
+        public readonly List<ValidationRule> Validations = new List<ValidationRule>();
         public int FreezeRow;
         public int FreezeColumn;
         public int FilterColumn = -1;
@@ -135,6 +144,11 @@ namespace DinkCel
         private string[,] copiedDisplays;
         private string copiedClipboardText;
         private readonly List<ConditionalRule> conditionalRules = new List<ConditionalRule>();
+        private readonly List<TableDefinition> tables = new List<TableDefinition>();
+        private readonly List<ChartDefinition> charts = new List<ChartDefinition>();
+        private readonly List<ValidationRule> validations = new List<ValidationRule>();
+        private readonly List<NamedRange> namedRanges = new List<NamedRange>();
+        private readonly List<PivotDefinition> pivots = new List<PivotDefinition>();
         private int freezeRow;
         private int freezeColumn;
         private int filterColumn = -1;
@@ -306,6 +320,9 @@ namespace DinkCel
             AddMenuItem(viewMenu, "Đổi giao diện...", Keys.None, ChooseTheme);
             menu.Items.Add(viewMenu);
             AddSpreadsheetMenus();
+            var helpMenu = new ToolStripMenuItem("Trợ giúp");
+            AddMenuItem(helpMenu, "Giấy phép thư viện...", Keys.None, ShowThirdPartyLicenses);
+            menu.Items.Add(helpMenu);
             MainMenuStrip = menu;
             layout.Controls.Add(menu, 0, 1);
 
@@ -450,6 +467,19 @@ namespace DinkCel
             };
             grid.CellFormatting += GridCellFormatting;
             grid.EditingControlShowing += GridEditingControlShowing;
+            grid.CellBeginEdit += delegate(object sender, DataGridViewCellCancelEventArgs e)
+            {
+                if (ValidationFor(e.RowIndex, e.ColumnIndex) == null) return;
+                e.Cancel = true;
+                int row = e.RowIndex, column = e.ColumnIndex;
+                BeginInvoke((Action)delegate { ShowValidationDropdown(row, column); });
+            };
+            grid.CellClick += delegate(object sender, DataGridViewCellEventArgs e)
+            {
+                if (e.RowIndex >= 0 && e.ColumnIndex >= 0 &&
+                    ValidationFor(e.RowIndex, e.ColumnIndex) != null)
+                    ShowValidationDropdown(e.RowIndex, e.ColumnIndex);
+            };
             grid.SelectionChanged += delegate
             {
                 if (selectingHeader)
@@ -457,10 +487,12 @@ namespace DinkCel
                 UpdateSelection();
                 grid.Invalidate();
             };
-            grid.CellValueChanged += delegate
+            grid.CellValueChanged += delegate(object sender, DataGridViewCellEventArgs e)
             {
                 if (!loading)
                 {
+                    if (e.RowIndex >= 0 && e.ColumnIndex >= 0 &&
+                        !ValidateCellChange(e.RowIndex, e.ColumnIndex)) return;
                     RecordChange();
                     Recalculate();
                     MarkDirty();
@@ -566,7 +598,19 @@ namespace DinkCel
                     }
                 return null;
             }, sheets.Count > activeSheetIndex ? sheets[activeSheetIndex].Name : "Sheet1",
-                RowCount, ColumnCount);
+                RowCount, ColumnCount, delegate(string name)
+                {
+                    NamedRange named = namedRanges.FirstOrDefault(n =>
+                        string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase));
+                    return named == null ? null : new FormulaNamedRange
+                    {
+                        Sheet = named.Sheet,
+                        FirstRow = named.Range.Top,
+                        FirstColumn = named.Range.Left,
+                        LastRow = named.Range.Bottom - 1,
+                        LastColumn = named.Range.Right - 1
+                    };
+                });
             for (int row = 0; row < RowCount; row++)
             {
                 for (int column = 0; column < ColumnCount; column++)
@@ -908,6 +952,9 @@ namespace DinkCel
             state.Name = sheets.Count > activeSheetIndex ? sheets[activeSheetIndex].Name : "Sheet1";
             state.Merges.AddRange(merges);
             state.Rules.AddRange(conditionalRules);
+            state.Tables.AddRange(tables);
+            state.Charts.AddRange(charts);
+            state.Validations.AddRange(validations);
             state.FreezeRow = freezeRow;
             state.FreezeColumn = freezeColumn;
             state.FilterColumn = filterColumn;
@@ -977,6 +1024,8 @@ namespace DinkCel
 
         private void RestoreSheet(SheetState state)
         {
+            if (validationEditor != null)
+            { grid.Controls.Remove(validationEditor); validationEditor.Dispose(); validationEditor = null; }
             loading = true;
             grid.SuspendLayout();
             try
@@ -1007,6 +1056,9 @@ namespace DinkCel
                 UpdateMergedReadOnly();
                 conditionalRules.Clear();
                 conditionalRules.AddRange(state.Rules);
+                tables.Clear(); tables.AddRange(state.Tables);
+                charts.Clear(); charts.AddRange(state.Charts);
+                validations.Clear(); validations.AddRange(state.Validations);
                 freezeRow = state.FreezeRow;
                 freezeColumn = state.FreezeColumn;
                 filterColumn = state.FilterColumn;
@@ -1125,6 +1177,8 @@ namespace DinkCel
             merges.Clear();
             UpdateMergedReadOnly();
             conditionalRules.Clear();
+            tables.Clear(); charts.Clear(); validations.Clear();
+            namedRanges.Clear(); pivots.Clear();
             freezeRow = freezeColumn = 0;
             filterColumn = -1;
             filterValue = "";
@@ -1146,7 +1200,7 @@ namespace DinkCel
                 return;
             using (var dialog = new OpenFileDialog())
             {
-                dialog.Filter = "Spreadsheet (*.dinkcel;*.xlsx;*.csv)|*.dinkcel;*.xlsx;*.csv|DinkCel (*.dinkcel)|*.dinkcel|Excel (*.xlsx)|*.xlsx|CSV (*.csv)|*.csv";
+                dialog.Filter = "Bảng tính (*.dinkcel;*.xlsx;*.xls;*.ods;*.csv)|*.dinkcel;*.xlsx;*.xls;*.ods;*.csv|DinkCel (*.dinkcel)|*.dinkcel|Excel (*.xlsx;*.xls)|*.xlsx;*.xls|OpenDocument (*.ods)|*.ods|CSV (*.csv)|*.csv";
                 if (dialog.ShowDialog(this) != DialogResult.OK)
                     return;
                 OpenPath(dialog.FileName);
@@ -1159,10 +1213,12 @@ namespace DinkCel
                 {
                     bool isCsv = string.Equals(Path.GetExtension(path), ".csv",
                         StringComparison.OrdinalIgnoreCase);
+                    string extension = Path.GetExtension(path).ToLowerInvariant();
                     CsvDocument csv = null;
                     WorkbookSnapshot workbook = isCsv ? ReadCsvWorkbook(path, out csv) :
-                        string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) ?
-                        XlsxFile.Read(path, RowCount, ColumnCount) : ReadWorkbook(path);
+                        extension == ".xlsx" ? XlsxFile.Read(path, RowCount, ColumnCount) :
+                        extension == ".xls" ? XlsFile.Read(path, RowCount, ColumnCount) :
+                        extension == ".ods" ? OdsFile.Read(path, RowCount, ColumnCount) : ReadWorkbook(path);
                     ClearGrid();
                     ThemePalette savedTheme = ThemePalette.Find(workbook.ThemeId);
                     if (savedTheme != null)
@@ -1170,6 +1226,8 @@ namespace DinkCel
                     if (workbook.HasBackground)
                         ApplySheetBackground(workbook.Background, false);
                     sheets.Clear();
+                    namedRanges.Clear(); namedRanges.AddRange(workbook.NamedRanges);
+                    pivots.Clear(); pivots.AddRange(workbook.Pivots);
                     foreach (SheetSnapshot snapshot in workbook.Sheets)
                     {
                         SheetState state = StateFromSnapshot(snapshot);
@@ -1231,6 +1289,7 @@ namespace DinkCel
                 workbook.Background = ColorTranslator.FromHtml(background.Value);
                 workbook.HasBackground = true;
             }
+            ReadWorkbookMetadata(document.Root, workbook);
             List<XElement> sheetElements = new List<XElement>(document.Root.Elements("sheet"));
             if (sheetElements.Count > 0)
             {
@@ -1255,6 +1314,7 @@ namespace DinkCel
                         sheet.Rules.Add(new ConditionalRule { Range = new Rectangle((int)rule.Attribute("column"),
                             (int)rule.Attribute("row"), (int)rule.Attribute("width"), (int)rule.Attribute("height")),
                             Threshold = (double)rule.Attribute("threshold"), Color = ColorTranslator.FromHtml((string)rule.Attribute("color")) });
+                    ReadSheetMetadata(sheetElement, sheet);
                     foreach (XElement dimension in sheetElement.Elements("row"))
                         sheet.RowHeights[(int)dimension.Attribute("index")] = (int)dimension.Attribute("height");
                     foreach (XElement dimension in sheetElement.Elements("column"))
@@ -1330,9 +1390,9 @@ namespace DinkCel
             using (var dialog = new SaveFileDialog())
             {
                 bool csv = IsCsvPath(currentPath);
-                dialog.Filter = "DinkCel (*.dinkcel)|*.dinkcel|Excel (*.xlsx)|*.xlsx|CSV (*.csv)|*.csv";
+                dialog.Filter = "DinkCel (*.dinkcel)|*.dinkcel|Excel (*.xlsx)|*.xlsx|Excel 97-2003 (*.xls)|*.xls|OpenDocument (*.ods)|*.ods|CSV (*.csv)|*.csv";
                 dialog.DefaultExt = csv ? "csv" : "dinkcel";
-                dialog.FilterIndex = csv ? 3 : 1;
+                dialog.FilterIndex = csv ? 5 : 1;
                 dialog.AddExtension = false;
                 dialog.OverwritePrompt = false;
                 dialog.FileName = currentPath == null ? "BangTinh" :
@@ -1340,7 +1400,8 @@ namespace DinkCel
                 if (dialog.ShowDialog(this) != DialogResult.OK)
                     return false;
                 string path = Path.ChangeExtension(dialog.FileName,
-                    dialog.FilterIndex == 3 ? ".csv" : dialog.FilterIndex == 2 ? ".xlsx" : ".dinkcel");
+                    dialog.FilterIndex == 5 ? ".csv" : dialog.FilterIndex == 4 ? ".ods" :
+                    dialog.FilterIndex == 3 ? ".xls" : dialog.FilterIndex == 2 ? ".xlsx" : ".dinkcel");
                 if (File.Exists(path) && MessageBox.Show(this,
                     "Tệp đã tồn tại. Bạn muốn ghi đè không?", "DinkCel",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
@@ -1359,7 +1420,11 @@ namespace DinkCel
         {
             return IsCsvPath(path) ? WriteCsv(path) :
                 string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) ?
-                WriteXlsx(path) : WriteWorkbook(path);
+                WriteXlsx(path) :
+                string.Equals(Path.GetExtension(path), ".xls", StringComparison.OrdinalIgnoreCase) ?
+                WriteXls(path) :
+                string.Equals(Path.GetExtension(path), ".ods", StringComparison.OrdinalIgnoreCase) ?
+                WriteOds(path) : WriteWorkbook(path);
         }
 
         private bool WriteCsv(string path)
@@ -1438,6 +1503,7 @@ namespace DinkCel
                         ColorTranslator.ToHtml(sheetBackground)));
                 foreach (SheetState state in sheets)
                     root.Add(SerializeSheet(SnapshotFromState(state)));
+                SerializeWorkbookMetadata(root, namedRanges, pivots);
                 new XDocument(root).Save(path);
                 currentPath = path;
                 csvDocument = null;
@@ -1599,7 +1665,8 @@ namespace DinkCel
                     for (int column = 0;
                         column < values.Length && startColumn + column < ColumnCount;
                         column++)
-                        grid[startColumn + column, startRow + row].Value = values[column];
+                        if (CanAcceptValue(startRow + row, startColumn + column, values[column]))
+                            grid[startColumn + column, startRow + row].Value = values[column];
                 }
             }
             finally

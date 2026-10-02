@@ -11,6 +11,12 @@ namespace DinkCel
 
         private static void Main()
         {
+            try { Run(); }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(1); }
+        }
+
+        private static void Run()
+        {
             IList<string[]> rows = CsvFile.Parse(new StringReader(
                 "name,note,empty\r\n\"A,B\",\"line 1\r\nline \"\"2\"\"\",\r\n"), 200, 26);
             Equal(2, rows.Count);

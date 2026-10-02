@@ -4,6 +4,8 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using System.Xml.Linq;
 
@@ -17,6 +19,9 @@ namespace DinkCel
             AddMenuItem(sheet, "Thêm trang tính", Keys.None, AddSheet);
             AddMenuItem(sheet, "Đổi tên trang tính", Keys.None, RenameSheet);
             AddMenuItem(sheet, "Xóa trang tính", Keys.None, DeleteSheet);
+            AddMenuItem(sheet, "Đặt tên vùng...", Keys.None, DefineNamedRange);
+            AddMenuItem(sheet, "Đi tới vùng có tên...", Keys.None, GoToNamedRange);
+            AddMenuItem(sheet, "Xóa vùng có tên...", Keys.None, DeleteNamedRange);
             menu.Items.Add(sheet);
             var data = new ToolStripMenuItem("Dữ liệu");
             AddMenuItem(data, "Sắp xếp tăng dần", Keys.None, delegate { SortRows(false); });
@@ -24,7 +29,15 @@ namespace DinkCel
             AddMenuItem(data, "Lọc theo nội dung...", Keys.None, SetFilter);
             AddMenuItem(data, "Bỏ lọc", Keys.None, delegate { filterColumn = -1; filterValue = ""; ApplyFreezeAndFilter(); RecordChange(); MarkDirty(); });
             AddMenuItem(data, "Tìm và thay thế...", Keys.Control | Keys.H, FindReplace);
+            AddMenuItem(data, "Tạo Pivot Table...", Keys.None, CreatePivot);
+            AddMenuItem(data, "Làm mới Pivot Table", Keys.None, RefreshAllPivots);
             menu.Items.Add(data);
+            var insert = new ToolStripMenuItem("Chèn");
+            AddMenuItem(insert, "Tạo Table từ vùng chọn...", Keys.None, CreateTable);
+            AddMenuItem(insert, "Biểu đồ từ vùng chọn...", Keys.None, CreateChart);
+            AddMenuItem(insert, "Xem biểu đồ...", Keys.None, OpenChart);
+            AddMenuItem(insert, "Danh sách chọn cho ô...", Keys.None, AddDropdown);
+            menu.Items.Add(insert);
             var cells = new ToolStripMenuItem("Ô");
             AddMenuItem(cells, "Định dạng số...", Keys.None, SetNumberFormat);
             AddMenuItem(cells, "Gộp ô đã chọn", Keys.None, MergeSelection);
@@ -37,6 +50,14 @@ namespace DinkCel
             AddMenuItem(cells, "Dán chỉ giá trị", Keys.Control | Keys.Shift | Keys.V, delegate { PasteSpecial(false); });
             AddMenuItem(cells, "Dán chỉ định dạng", Keys.None, delegate { PasteSpecial(true); });
             menu.Items.Add(cells);
+            var fileMenu = menu.Items[0] as ToolStripMenuItem;
+            if (fileMenu != null)
+            {
+                fileMenu.DropDownItems.Add(new ToolStripSeparator());
+                AddMenuItem(fileMenu, "Xem trước khi in...", Keys.None, PreviewPrint);
+                AddMenuItem(fileMenu, "In...", Keys.Control | Keys.P, PrintWorkbook);
+                AddMenuItem(fileMenu, "Xuất PDF...", Keys.None, ExportPdf);
+            }
         }
 
         private void SaveActiveSheet()
@@ -116,7 +137,9 @@ namespace DinkCel
         {
             SaveActiveSheet();
             StoreHistory();
-            var state = new SheetState { Name = "Sheet" + (sheets.Count + 1), Background = sheetBackground, ThemeId = theme.Id };
+            int number = sheets.Count + 1;
+            while (sheets.Any(s => string.Equals(s.Name, "Sheet" + number, StringComparison.OrdinalIgnoreCase))) number++;
+            var state = new SheetState { Name = "Sheet" + number, Background = sheetBackground, ThemeId = theme.Id };
             for (int r = 0; r < RowCount; r++) state.RowHeights[r] = 27;
             for (int c = 0; c < ColumnCount; c++) state.ColumnWidths[c] = 120;
             sheets.Add(state);
@@ -137,17 +160,83 @@ namespace DinkCel
             if (name.Length == 0 || name.Length > 31 || name.IndexOfAny(new[] { '[', ']', ':', '*', '?', '/', '\\' }) >= 0 ||
                 sheets.Any(s => s != sheets[activeSheetIndex] && string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase)))
             { MessageBox.Show(this, "Tên trang tính không hợp lệ hoặc đã tồn tại."); return; }
+            string oldName = sheets[activeSheetIndex].Name;
+            SaveActiveSheet();
             sheets[activeSheetIndex].Name = name;
+            foreach (NamedRange named in namedRanges)
+                if (string.Equals(named.Sheet, oldName, StringComparison.OrdinalIgnoreCase)) named.Sheet = name;
+            foreach (PivotDefinition pivot in pivots)
+            {
+                if (string.Equals(pivot.SourceSheet, oldName, StringComparison.OrdinalIgnoreCase)) pivot.SourceSheet = name;
+                if (string.Equals(pivot.TargetSheet, oldName, StringComparison.OrdinalIgnoreCase)) pivot.TargetSheet = name;
+            }
+            foreach (SheetState sheet in sheets)
+                foreach (CellState cell in sheet.Cells.Values)
+                    if (cell.Value is string)
+                        cell.Value = RenameSheetReferences((string)cell.Value, oldName, name);
+            loading = true;
+            try
+            {
+                for (int r = 0; r < RowCount; r++)
+                    for (int c = 0; c < ColumnCount; c++)
+                    {
+                        string raw = Convert.ToString(grid[c, r].Value);
+                        if (!string.IsNullOrEmpty(raw) && raw.StartsWith("=", StringComparison.Ordinal))
+                            grid[c, r].Value = RenameSheetReferences(raw, oldName, name);
+                    }
+            }
+            finally { loading = false; }
+            Recalculate();
+            ResetHistory();
             RefreshSheetTabs();
             MarkDirty();
             otherSheetsDirty = true;
         }
 
+        private static string RenameSheetReferences(string formula, string oldName, string newName)
+        {
+            if (string.IsNullOrEmpty(formula) || !formula.StartsWith("=", StringComparison.Ordinal)) return formula;
+            string replacement = Regex.IsMatch(newName, @"^[A-Za-z_][A-Za-z0-9_]*$") ?
+                newName : "'" + newName.Replace("'", "''") + "'";
+            var pattern = new Regex(@"(?<![A-Za-z0-9_])(?:'(?<quoted>(?:[^']|'')+)'|(?<plain>[A-Za-z_][A-Za-z0-9_]*))!", RegexOptions.IgnoreCase);
+            var output = new StringBuilder();
+            var code = new StringBuilder();
+            bool quotedText = false;
+            for (int i = 0; i < formula.Length; i++)
+            {
+                char ch = formula[i];
+                if (ch == '"')
+                {
+                    if (!quotedText)
+                    {
+                        output.Append(pattern.Replace(code.ToString(), m =>
+                            string.Equals((m.Groups["quoted"].Success ? m.Groups["quoted"].Value.Replace("''", "'") : m.Groups["plain"].Value),
+                                oldName, StringComparison.OrdinalIgnoreCase) ? replacement + "!" : m.Value));
+                        code.Clear(); quotedText = true;
+                    }
+                    else if (i + 1 < formula.Length && formula[i + 1] == '"')
+                    { output.Append("\"\""); i++; continue; }
+                    else quotedText = false;
+                    output.Append(ch);
+                }
+                else if (quotedText) output.Append(ch);
+                else code.Append(ch);
+            }
+            output.Append(pattern.Replace(code.ToString(), m =>
+                string.Equals((m.Groups["quoted"].Success ? m.Groups["quoted"].Value.Replace("''", "'") : m.Groups["plain"].Value),
+                    oldName, StringComparison.OrdinalIgnoreCase) ? replacement + "!" : m.Value));
+            return output.ToString();
+        }
+
         private void DeleteSheet()
         {
             if (sheets.Count == 1) return;
+            string deletedName = sheets[activeSheetIndex].Name;
             sheets.RemoveAt(activeSheetIndex);
             sheetHistories.RemoveAt(activeSheetIndex);
+            namedRanges.RemoveAll(n => string.Equals(n.Sheet, deletedName, StringComparison.OrdinalIgnoreCase));
+            pivots.RemoveAll(p => string.Equals(p.SourceSheet, deletedName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.TargetSheet, deletedName, StringComparison.OrdinalIgnoreCase));
             activeSheetIndex = Math.Min(activeSheetIndex, sheets.Count - 1);
             RestoreSheet(sheets[activeSheetIndex]);
             LoadHistory();
@@ -174,6 +263,9 @@ namespace DinkCel
                 FilterColumn = source.FilterColumn, FilterValue = source.FilterValue };
             state.Merges.AddRange(source.Merges);
             state.Rules.AddRange(source.Rules);
+            state.Tables.AddRange(source.Tables);
+            state.Charts.AddRange(source.Charts);
+            state.Validations.AddRange(source.Validations);
             for (int r = 0; r < RowCount; r++) state.RowHeights[r] = source.RowHeights.ContainsKey(r) ? source.RowHeights[r] : 27;
             for (int c = 0; c < ColumnCount; c++) state.ColumnWidths[c] = source.ColumnWidths.ContainsKey(c) ? source.ColumnWidths[c] : 120;
             foreach (var pair in source.Cells)
@@ -197,6 +289,9 @@ namespace DinkCel
                 FilterColumn = source.FilterColumn, FilterValue = source.FilterValue };
             result.Merges.AddRange(source.Merges);
             result.Rules.AddRange(source.Rules);
+            result.Tables.AddRange(source.Tables);
+            result.Charts.AddRange(source.Charts);
+            result.Validations.AddRange(source.Validations);
             for (int r = 0; r < RowCount; r++) if (source.RowHeights[r] != 27) result.RowHeights[r] = source.RowHeights[r];
             for (int c = 0; c < ColumnCount; c++) if (source.ColumnWidths[c] != 120) result.ColumnWidths[c] = source.ColumnWidths[c];
             foreach (var pair in source.Cells)
@@ -229,6 +324,7 @@ namespace DinkCel
                 new XAttribute("column", rule.Range.X), new XAttribute("width", rule.Range.Width),
                 new XAttribute("height", rule.Range.Height), new XAttribute("threshold", rule.Threshold.ToString(CultureInfo.InvariantCulture)),
                 new XAttribute("color", ColorTranslator.ToHtml(rule.Color))));
+            SerializeSheetMetadata(root, sheet);
             foreach (var pair in sheet.Cells)
             {
                 var cell = pair.Value;
@@ -250,6 +346,8 @@ namespace DinkCel
             {
                 grid.EndEdit(); SaveActiveSheet();
                 var workbook = new WorkbookSnapshot(); workbook.Sheets.Clear();
+                workbook.NamedRanges.AddRange(namedRanges);
+                workbook.Pivots.AddRange(pivots);
                 foreach (SheetState sheet in sheets) workbook.Sheets.Add(SnapshotFromState(sheet));
                 XlsxFile.Write(path, workbook, RowCount, ColumnCount);
                 currentPath = path; csvDocument = null; dirty = false;
@@ -261,6 +359,41 @@ namespace DinkCel
                 return true;
             }
             catch (Exception error) { MessageBox.Show(this, error.Message, "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Error); return false; }
+        }
+
+        private bool WriteXls(string path)
+        {
+            return WriteInterchange(path, delegate(WorkbookSnapshot workbook)
+            { XlsFile.Write(path, workbook, RowCount, ColumnCount); });
+        }
+
+        private bool WriteOds(string path)
+        {
+            return WriteInterchange(path, delegate(WorkbookSnapshot workbook)
+            { OdsFile.Write(path, workbook, RowCount, ColumnCount); });
+        }
+
+        private bool WriteInterchange(string path, Action<WorkbookSnapshot> writer)
+        {
+            try
+            {
+                grid.EndEdit(); SaveActiveSheet();
+                var workbook = new WorkbookSnapshot(); workbook.Sheets.Clear();
+                workbook.NamedRanges.AddRange(namedRanges);
+                workbook.Pivots.AddRange(pivots);
+                foreach (SheetState sheet in sheets) workbook.Sheets.Add(SnapshotFromState(sheet));
+                writer(workbook);
+                currentPath = path; csvDocument = null; dirty = false; otherSheetsDirty = false;
+                savedRevision = nextRevision; MarkAllHistoriesSaved(); UpdateTitle();
+                status.Text = "Đã lưu " + Path.GetFileName(path);
+                return true;
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show(this, "Không lưu được tệp: " + error.Message, "DinkCel",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
         }
 
         private void SortRows(bool descending)
@@ -413,7 +546,8 @@ namespace DinkCel
         private void UnmergeSelection()
         {
             if (grid.CurrentCell == null) return;
-            merges.RemoveAll(m => m.Contains(grid.CurrentCell.ColumnIndex, grid.CurrentCell.RowIndex));
+            merges.RemoveAll(m => m.Contains(grid.CurrentCell.ColumnIndex, grid.CurrentCell.RowIndex) ||
+                grid.SelectedCells.Cast<DataGridViewCell>().Any(c => m.Contains(c.ColumnIndex, c.RowIndex)));
             UpdateMergedReadOnly();
             RecordChange(); MarkDirty(); grid.Invalidate();
         }

@@ -12,6 +12,12 @@ namespace DinkCel
         [STAThread]
         private static void Main()
         {
+            try { Run(); }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(1); }
+        }
+
+        private static void Run()
+        {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             string directory = Path.Combine(Path.GetTempPath(),

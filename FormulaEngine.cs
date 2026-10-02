@@ -6,11 +6,21 @@ using System.Text.RegularExpressions;
 
 namespace DinkCel
 {
+    internal sealed class FormulaNamedRange
+    {
+        public string Sheet;
+        public int FirstRow;
+        public int FirstColumn;
+        public int LastRow;
+        public int LastColumn;
+    }
+
     internal sealed class FormulaEngine
     {
         private readonly Func<int, int, string> readCell;
         private readonly Func<string, int, int, string> readOtherSheet;
         private readonly string currentSheet;
+        private readonly Func<string, FormulaNamedRange> resolveName;
         private readonly int rowCount;
         private readonly int columnCount;
         private readonly Dictionary<string, Value> cache = new Dictionary<string, Value>();
@@ -22,10 +32,16 @@ namespace DinkCel
         public FormulaEngine(Func<int, int, string> readCell,
             Func<string, int, int, string> readOtherSheet, string currentSheet,
             int rowCount, int columnCount)
+            : this(readCell, readOtherSheet, currentSheet, rowCount, columnCount, null) { }
+
+        public FormulaEngine(Func<int, int, string> readCell,
+            Func<string, int, int, string> readOtherSheet, string currentSheet,
+            int rowCount, int columnCount, Func<string, FormulaNamedRange> resolveName)
         {
             this.readCell = readCell;
             this.readOtherSheet = readOtherSheet;
             this.currentSheet = currentSheet ?? "";
+            this.resolveName = resolveName;
             this.rowCount = rowCount;
             this.columnCount = columnCount;
         }
@@ -41,6 +57,8 @@ namespace DinkCel
             }
             if (result.Kind == ValueKind.Blank)
                 return "0";
+            if (result.Kind == ValueKind.Range)
+                return "#VALUE!";
             return result.Text;
         }
 
@@ -169,6 +187,21 @@ namespace DinkCel
             public override Value Evaluate(FormulaEngine engine)
             {
                 return engine.EvaluateCell(sheet, row, column);
+            }
+        }
+
+        private sealed class NameNode : Node
+        {
+            private readonly string name;
+            public NameNode(string name) { this.name = name; }
+            public override Value Evaluate(FormulaEngine engine)
+            {
+                FormulaNamedRange range = engine.resolveName == null ? null : engine.resolveName(name);
+                if (range == null) return Value.Error("#NAME?");
+                if (range.FirstRow == range.LastRow && range.FirstColumn == range.LastColumn)
+                    return engine.EvaluateCell(range.Sheet, range.FirstRow, range.FirstColumn);
+                return new RangeNode(range.Sheet, range.FirstRow, range.FirstColumn,
+                    range.LastRow, range.LastColumn).Evaluate(engine);
             }
         }
 
@@ -591,7 +624,7 @@ namespace DinkCel
 
                 int row, column;
                 if (!TryAddress(word, out row, out column))
-                    return new LiteralNode(Value.Error("#NAME?"));
+                    return new NameNode(word);
                 if (Take(":"))
                 {
                     string end = ReadWord();

@@ -1,0 +1,13 @@
+DinkCel v0.3.0 third-party libraries
+
+NPOI 2.3.0 (Apache License 2.0)
+Source: https://www.nuget.org/packages/NPOI/2.3.0
+License: vendor/NPOI-LICENSE.txt
+
+SharpZipLib 0.86.0.518 (GPL 2.0 or later, with linking exception)
+Source: https://github.com/icsharpcode/SharpZipLib/tree/0.86.0.518
+License and linking exception: vendor/SharpZipLib-COPYING.txt
+
+PDFsharp 1.50.5147 (MIT License)
+Source: https://www.nuget.org/packages/PDFsharp/1.50.5147
+License: vendor/PDFsharp-LICENSE.txt

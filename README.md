@@ -12,16 +12,22 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.2.0
+## Tính năng v0.3.0
 
-- Nhiều sheet: thêm, đổi tên, xóa và chuyển sheet bằng các tab ở cuối cửa sổ. Undo/Redo được giữ riêng cho từng sheet khi chuyển tab.
-- Mở, lưu và **Lưu thành** `.xlsx` trực tiếp trên máy; hỗ trợ nhiều sheet, công thức, kiểu số, màu chữ/nền, căn lề, merge, kích thước hàng/cột, freeze, filter và quy tắc tô màu có điều kiện dạng “lớn hơn”. Vẫn mở được `.dinkcel` cũ và CSV.
-- Menu **Dữ liệu** có sắp xếp tăng/giảm theo cột đang chọn, lọc theo nội dung, bỏ lọc, tìm và thay thế. Nếu chọn một vùng nhiều hàng, sắp xếp chỉ áp dụng cho vùng hàng đó.
-- Menu **Ô** có định dạng số (`N2`, `P1`, `C2`, `0.00`...), gộp/bỏ gộp, AutoFit hàng/cột, cố định/bỏ cố định, tô màu có điều kiện và dán đặc biệt (chỉ giá trị hoặc chỉ định dạng). Vẫn kéo mép tiêu đề để chỉnh kích thước bằng tay.
-- Bổ sung công thức tham chiếu sheet (`Sheet2!A1`, `'Tên sheet'!A1`), ROUND/ROUNDUP/ROUNDDOWN, ABS, SQRT, INT, POWER, MOD, COUNTA, MEDIAN, AND, OR, NOT, LEN, LEFT, RIGHT, UPPER, LOWER, TRIM, CONCAT, COUNTIF và SUMIF.
+- **Table:** chọn vùng gồm hàng tiêu đề và dữ liệu, rồi tạo Table trong menu **Dữ liệu**. DinkCel tô màu tiêu đề và các hàng xen kẽ; khi lưu `.xlsx`, Table được ghi thành Excel Table thực.
+- **Charts:** tạo biểu đồ cột, đường hoặc tròn từ vùng có cột đầu làm nhãn. Xem biểu đồ trong ứng dụng, lưu ảnh PNG; `.xlsx` giữ biểu đồ để mở trong Excel/LibreOffice.
+- **Data validation/dropdown:** gán danh sách lựa chọn cho một vùng ô; giá trị nhập sai bị từ chối. `.xlsx` giữ danh sách nhập trực tiếp.
+- **Pivot Table cơ bản:** chọn vùng có hàng tiêu đề, cột nhóm và cột số; tạo sheet tổng hợp theo Sum hoặc Count, rồi dùng **Làm mới Pivot** khi dữ liệu nguồn đổi.
+- **In/PDF:** xem trước, in sheet hiện tại, hoặc xuất toàn bộ workbook ra PDF.
+- **Named ranges:** đặt tên một vùng và dùng tên đó trong công thức, ví dụ `=SUM(DoanhThu)`; có thể đi tới hoặc xóa vùng có tên. Công thức liên sheet dùng `=Sheet2!A1` hoặc `='Tên sheet'!A1`.
+- **Định dạng file:** mở/lưu `.dinkcel`, `.xlsx`, `.xls`, `.ods` và CSV. `.dinkcel` giữ metadata DinkCel; `.xlsx` trao đổi Table, chart, dropdown và named ranges.
 
-Giới hạn hiện tại: mỗi sheet tối đa 200 hàng × 26 cột. `.xlsx` tập trung vào dữ liệu và các định dạng nêu trên; chart, pivot, macro và các tính năng Excel nâng cao chưa được giữ khi lưu lại. CSV chỉ chứa một sheet và dữ liệu ô; nếu workbook có nhiều sheet, hãy lưu thành `.xlsx` hoặc `.dinkcel`.
-Lệnh **Dán chỉ định dạng** dùng vùng vừa sao chép trong DinkCel; **Dán chỉ giá trị** hỗ trợ cả văn bản từ ứng dụng khác.
+### Tính năng từ v0.2.0
+
+- Nhiều sheet; mở/lưu `.xlsx`; sắp xếp, lọc, tìm/thay thế; định dạng số, merge, AutoFit, freeze panes, conditional formatting và Paste Special.
+- Các hàm số, văn bản, điều kiện và thống kê cơ bản; công thức liên sheet.
+
+**Giới hạn:** mỗi sheet có 200 hàng × 26 cột. File có dữ liệu ngoài vùng này sẽ báo lỗi khi mở. CSV chỉ lưu một sheet và nội dung ô. Pivot là sheet tổng hợp phải làm mới bằng lệnh, chưa phải Pivot Table gốc của Excel. `.xls` và `.ods` tập trung vào dữ liệu, công thức, nhiều sheet, merge và named ranges; các thành phần nâng cao và một số kiểu định dạng có thể không được giữ khi lưu lại. Bản in và PDF chưa có biểu đồ. Với file có macro hoặc tính năng Excel nâng cao, hãy giữ bản gốc trước khi chỉnh sửa và lưu lại.
 
 ### Tính năng từ v0.1.1
 
@@ -44,7 +50,7 @@ Lệnh **Dán chỉ định dạng** dùng vùng vừa sao chép trong DinkCel; 
 
 Ví dụ: nhập 10 vào A1, 20 vào A2, rồi nhập =SUM(A1:A2) vào A3; A3 sẽ hiển thị 30. Nhập =IF(A1>0,"Có","Không") để thử hàm điều kiện. Dùng dấu chấm cho số thập phân trong công thức. Có thể ngăn cách đối số hàm bằng dấu phẩy hoặc chấm phẩy.
 
-File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx` dùng để trao đổi với Excel và Google Sheets.
+File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx`, `.xls` và `.ods` dùng để trao đổi với Excel và LibreOffice.
 
 ## Một ứng dụng Excel cơ bản cần gì?
 
@@ -68,7 +74,7 @@ File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx` dùng để tra
 2. Mở rộng nhập/xuất CSV với tùy chọn dấu phân cách và mã hóa theo từng file.
 3. Đọc FormulaEngine.cs và thử viết thêm hàm hoặc công thức liên sheet.
 4. Mở rộng định dạng ngày và tối ưu bảng lớn hơn 200 × 26.
-5. Bổ sung biểu đồ, in và khả năng giữ nhiều thành phần Excel nâng cao.
+5. Nghiên cứu cách lưu Pivot Table gốc và giữ thêm thành phần nâng cao khi trao đổi file Excel/ODS.
 
 ## Cấu trúc
 
@@ -76,11 +82,14 @@ File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx` dùng để tra
 - DinkCel.ico: icon được nhúng vào file .exe và dùng trên thanh tiêu đề. icon_dink_cell.png là ảnh gốc; chạy `powershell.exe -NoProfile -ExecutionPolicy Bypass -File make_icon.ps1` trong thư mục project để tạo lại .ico khi thay ảnh.
 - DesktopApp.cs: mã nguồn Windows Forms.
 - SpreadsheetFeatures.cs: các thao tác sheet, dữ liệu và định dạng trong giao diện.
-- XlsxFile.cs và XlsxStyles.cs: đọc/ghi `.xlsx`.
+- XlsxFile.cs, XlsxStyles.cs và XlsxCharts.cs: đọc/ghi `.xlsx` và biểu đồ.
+- XlsFile.cs, OdsFile.cs, PdfFile.cs: đọc/ghi `.xls`, `.ods` và xuất PDF.
+- WorkbookFeatures.cs, SpreadsheetV3Ui.cs và SpreadsheetOutputUi.cs: metadata và giao diện v0.3.
+- vendor/: thư viện NPOI, SharpZipLib, PDFsharp cùng giấy phép; nội dung giấy phép được nhúng trong `.exe` và xem qua menu **Trợ giúp**.
 - FormulaEngine.cs: phân tích và tính công thức, dịch tham chiếu khi kéo ô.
 - ThemePalette.cs: các mẫu màu và hộp chọn giao diện.
 - build.cmd: lệnh build lại ứng dụng.
-- test.cmd: kiểm tra công thức, CSV, nhiều sheet và `.xlsx`.
+- test.cmd: kiểm tra công thức, CSV, nhiều sheet, `.xlsx`, `.xls`, `.ods`, PDF và giao diện v0.3.
 
 ## Phát hành phiên bản mới
 
