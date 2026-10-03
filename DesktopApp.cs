@@ -24,9 +24,20 @@ namespace DinkCel
 
     internal sealed class SmoothGrid : DataGridView
     {
+        public Func<Keys, bool> ShortcutHandler;
         public SmoothGrid()
         {
             DoubleBuffered = true;
+        }
+        protected override bool ProcessDialogKey(Keys keyData)
+        {
+            return ShortcutHandler != null && ShortcutHandler(keyData) ||
+                base.ProcessDialogKey(keyData);
+        }
+        protected override bool ProcessDataGridViewKey(KeyEventArgs e)
+        {
+            return ShortcutHandler != null && ShortcutHandler(e.KeyData) ||
+                base.ProcessDataGridViewKey(e);
         }
     }
 
@@ -298,10 +309,19 @@ namespace DinkCel
             menu.Items.Add(fileMenu);
             var editMenu = new ToolStripMenuItem("Chỉnh sửa");
             AddMenuItem(editMenu, "Sao chép", Keys.Control | Keys.C, CopySelected);
+            AddMenuItem(editMenu, "Cắt", Keys.Control | Keys.X, CutSelected);
             AddMenuItem(editMenu, "Dán", Keys.Control | Keys.V, PasteSelected);
+            AddMenuItem(editMenu, "Dán giá trị", Keys.Control | Keys.Shift | Keys.V, PasteValues);
+            AddMenuItem(editMenu, "Dán công thức", Keys.None, PasteFormulas);
+            AddMenuItem(editMenu, "Dán định dạng", Keys.None, PasteFormats);
+            AddMenuItem(editMenu, "Dán chuyển vị", Keys.None, PasteTranspose);
             AddMenuItem(editMenu, "Hoàn tác", Keys.Control | Keys.Z, Undo);
             AddMenuItem(editMenu, "Làm lại", Keys.Control | Keys.Y, Redo);
             AddMenuItem(editMenu, "Xóa nội dung ô đã chọn", Keys.None, ClearSelectedCells);
+            editMenu.DropDownItems.Add(new ToolStripSeparator());
+            AddMenuItem(editMenu, "Điền xuống", Keys.Control | Keys.D, FillDown);
+            AddMenuItem(editMenu, "Điền sang phải", Keys.Control | Keys.R, FillRight);
+            AddMenuItem(editMenu, "Điền chuỗi tăng", Keys.None, FillSeries);
             editMenu.DropDownItems.Add(new ToolStripSeparator());
             AddMenuItem(editMenu, "Chèn hàng phía trên", Keys.None, InsertRow);
             AddMenuItem(editMenu, "Xóa hàng", Keys.None, DeleteRow);
@@ -399,14 +419,18 @@ namespace DinkCel
             formula.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
             formula.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             formula.BackColor = theme.Sheet;
-            addressBox.ReadOnly = true;
-            addressBox.TabStop = false;
-            addressBox.BorderStyle = BorderStyle.None;
+            addressBox.ReadOnly = false;
+            addressBox.TabStop = true;
+            addressBox.BorderStyle = BorderStyle.FixedSingle;
             addressBox.BackColor = theme.Sheet;
             addressBox.ForeColor = theme.Text;
             addressBox.TextAlign = HorizontalAlignment.Center;
             addressBox.Dock = DockStyle.Fill;
             addressBox.Font = new Font("Arial", 10F);
+            var formulaTips = new ToolTip();
+            formulaTips.SetToolTip(addressBox, "Nhập A1, A1:C5 hoặc tên vùng rồi nhấn Enter");
+            addressBox.KeyDown += AddressBoxKeyDown;
+            addressBox.Enter += delegate { addressBox.SelectAll(); };
             formula.Controls.Add(addressBox, 0, 0);
             fx.Text = "fx";
             fx.ForeColor = theme.Muted;
@@ -414,16 +438,15 @@ namespace DinkCel
             fx.TextAlign = ContentAlignment.MiddleCenter;
             fx.Dock = DockStyle.Fill;
             formula.Controls.Add(fx, 1, 0);
-            contentBox.BorderStyle = BorderStyle.None;
+            contentBox.BorderStyle = BorderStyle.FixedSingle;
             contentBox.Font = new Font("Arial", 10F);
             contentBox.ForeColor = theme.Text;
             contentBox.BackColor = theme.Sheet;
             contentBox.Dock = DockStyle.Fill;
-            contentBox.TextChanged += delegate
-            {
-                if (!syncingContent && grid.CurrentCell != null)
-                    grid.CurrentCell.Value = contentBox.Text;
-            };
+            formulaTips.SetToolTip(contentBox, "Sửa nội dung hoặc công thức; Enter để lưu, Esc để hủy");
+            contentBox.TextChanged += delegate { if (!syncingContent) formulaBarChanged = true; };
+            contentBox.KeyDown += FormulaBarKeyDown;
+            contentBox.Leave += delegate { CommitFormulaBar(); };
             formula.Controls.Add(contentBox, 2, 0);
             formula.Paint += delegate(object sender, PaintEventArgs e)
             {
@@ -455,6 +478,7 @@ namespace DinkCel
             grid.ColumnHeadersDefaultCellStyle.BackColor = theme.Header;
             grid.RowHeadersDefaultCellStyle.BackColor = theme.Header;
             grid.ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableWithoutHeaderText;
+            grid.ShortcutHandler = HandleEditingShortcut;
             grid.CellPainting += GridCellPainting;
             grid.Paint += PaintMergedCells;
             grid.CellClick += delegate(object sender, DataGridViewCellEventArgs e)
@@ -484,6 +508,11 @@ namespace DinkCel
             {
                 if (selectingHeader)
                     return;
+                if (!selectingByKeyboard && grid.CurrentCell != null)
+                {
+                    selectionAnchorRow = grid.CurrentCell.RowIndex;
+                    selectionAnchorColumn = grid.CurrentCell.ColumnIndex;
+                }
                 UpdateSelection();
                 grid.Invalidate();
             };
@@ -516,6 +545,7 @@ namespace DinkCel
                 }
             };
             grid.KeyDown += GridKeyDown;
+            grid.CellEndEdit += delegate { if (pendingEditMove) FinishEditMove(); };
             grid.CellMouseDown += GridCellMouseDown;
             grid.RowHeaderMouseClick += GridCellMouseClick;
             grid.ColumnHeaderMouseClick += GridCellMouseClick;
@@ -879,6 +909,19 @@ namespace DinkCel
                     rectangle.Height -= 1;
                     e.Graphics.DrawRectangle(pen, rectangle);
                 }
+                if (!fillSelection.IsEmpty && e.RowIndex == fillSelection.Bottom - 1 &&
+                    e.ColumnIndex == fillSelection.Right - 1)
+                    using (var brush = new SolidBrush(theme.Accent))
+                        e.Graphics.FillRectangle(brush, e.CellBounds.Right - 7,
+                            e.CellBounds.Bottom - 7, 7, 7);
+                e.Handled = true;
+                return;
+            }
+
+            if (!fillSelection.IsEmpty && e.RowIndex == fillSelection.Bottom - 1 &&
+                e.ColumnIndex == fillSelection.Right - 1)
+            {
+                e.Paint(e.CellBounds, e.PaintParts & ~DataGridViewPaintParts.Focus);
                 using (var brush = new SolidBrush(theme.Accent))
                     e.Graphics.FillRectangle(brush, e.CellBounds.Right - 7,
                         e.CellBounds.Bottom - 7, 7, 7);
@@ -923,11 +966,15 @@ namespace DinkCel
         {
             if (grid.CurrentCell == null)
                 return;
-            addressBox.Text = ((char)('A' + grid.CurrentCell.ColumnIndex)).ToString()
-                + (grid.CurrentCell.RowIndex + 1);
-            syncingContent = true;
-            contentBox.Text = Convert.ToString(grid.CurrentCell.Value) ?? "";
-            syncingContent = false;
+            fillSelection = SelectedRectangle(grid, true);
+            if (!addressBox.Focused)
+                addressBox.Text = CellAddress(grid.CurrentCell.ColumnIndex, grid.CurrentCell.RowIndex);
+            if (!contentBox.Focused || !formulaBarChanged)
+            {
+                syncingContent = true;
+                contentBox.Text = Convert.ToString(grid.CurrentCell.Value) ?? "";
+                syncingContent = false;
+            }
 
             Font font = grid.CurrentCell.InheritedStyle.Font ?? grid.Font;
             syncingToolbar = true;
@@ -995,6 +1042,7 @@ namespace DinkCel
 
         private void ResetHistory()
         {
+            crossSheetMoves.Clear();
             undoHistory.Clear();
             redoHistory.Clear();
             nextRevision = 0;
@@ -1093,6 +1141,7 @@ namespace DinkCel
             grid.EndEdit();
             if (undoHistory.Count == 0)
                 return;
+            BeforeUndoCrossSheetMove();
             int last = undoHistory.Count - 1;
             SheetState previous = undoHistory[last];
             undoHistory.RemoveAt(last);
@@ -1114,6 +1163,7 @@ namespace DinkCel
             undoHistory.Add(lastState);
             RestoreSheet(next);
             lastState = CaptureSheet();
+            AfterRedoCrossSheetMove(next.RevisionId);
             lastState.RevisionId = next.RevisionId;
             status.Text = "Đã làm lại";
         }
@@ -1130,6 +1180,7 @@ namespace DinkCel
 
         private bool ConfirmDiscardChanges()
         {
+            if (!CommitFormulaBar()) return false;
             if (!dirty)
                 return true;
             DialogResult answer = MessageBox.Show(this,
@@ -1377,6 +1428,7 @@ namespace DinkCel
 
         private bool SaveDocument()
         {
+            if (!CommitFormulaBar()) return false;
             grid.EndEdit();
             if (currentPath == null)
                 return SaveDocumentAs();
@@ -1387,6 +1439,7 @@ namespace DinkCel
 
         private bool SaveDocumentAs()
         {
+            if (!CommitFormulaBar()) return false;
             using (var dialog = new SaveFileDialog())
             {
                 bool csv = IsCsvPath(currentPath);
@@ -1592,25 +1645,7 @@ namespace DinkCel
 
         private void CopySelected()
         {
-            if (grid.SelectedCells.Count > 0)
-            {
-                Clipboard.SetDataObject(grid.GetClipboardContent());
-                copiedClipboardText = Clipboard.ContainsText() ? Clipboard.GetText() : null;
-                int left = grid.SelectedCells.Cast<DataGridViewCell>().Min(c => c.ColumnIndex);
-                int right = grid.SelectedCells.Cast<DataGridViewCell>().Max(c => c.ColumnIndex);
-                int top = grid.SelectedCells.Cast<DataGridViewCell>().Min(c => c.RowIndex);
-                int bottom = grid.SelectedCells.Cast<DataGridViewCell>().Max(c => c.RowIndex);
-                copiedCells = new CellState[bottom - top + 1, right - left + 1];
-                copiedDisplays = new string[bottom - top + 1, right - left + 1];
-                for (int r = top; r <= bottom; r++)
-                    for (int c = left; c <= right; c++)
-                    {
-                        var cell = grid[c, r];
-                        copiedCells[r - top, c - left] = new CellState
-                        { Value = cell.Value, Style = new DataGridViewCellStyle(cell.Style) };
-                        copiedDisplays[r - top, c - left] = Convert.ToString(cell.FormattedValue) ?? "";
-                    }
-            }
+            CopySelection(false);
         }
 
         private void ClearSelectedCells()
@@ -1651,32 +1686,7 @@ namespace DinkCel
 
         private void PasteSelected()
         {
-            if (grid.CurrentCell == null || !Clipboard.ContainsText())
-                return;
-            string[] lines = Clipboard.GetText().TrimEnd('\r', '\n').Split('\n');
-            int startRow = grid.CurrentCell.RowIndex;
-            int startColumn = grid.CurrentCell.ColumnIndex;
-            loading = true;
-            try
-            {
-                for (int row = 0; row < lines.Length && startRow + row < RowCount; row++)
-                {
-                    string[] values = lines[row].TrimEnd('\r').Split('\t');
-                    for (int column = 0;
-                        column < values.Length && startColumn + column < ColumnCount;
-                        column++)
-                        if (CanAcceptValue(startRow + row, startColumn + column, values[column]))
-                            grid[startColumn + column, startRow + row].Value = values[column];
-                }
-            }
-            finally
-            {
-                loading = false;
-            }
-            Recalculate();
-            RecordChange();
-            MarkDirty();
-            UpdateSelection();
+            PasteClipboard(PasteKind.All);
         }
 
         private void GridCellMouseClick(object sender, DataGridViewCellMouseEventArgs e)
@@ -1968,10 +1978,12 @@ namespace DinkCel
 
         private void GridCellMouseMove(object sender, DataGridViewCellMouseEventArgs e)
         {
-            if (headerDragPending || fillDragging || grid.CurrentCell == null ||
-                e.RowIndex != grid.CurrentCell.RowIndex ||
-                e.ColumnIndex != grid.CurrentCell.ColumnIndex)
-                return;
+            if (headerDragPending || fillDragging) return;
+            if (grid.CurrentCell == null ||
+                fillSelection.IsEmpty ||
+                e.RowIndex != fillSelection.Bottom - 1 ||
+                e.ColumnIndex != fillSelection.Right - 1)
+            { grid.Cursor = Cursors.Default; return; }
             Rectangle rectangle = grid.GetCellDisplayRectangle(
                 e.ColumnIndex, e.RowIndex, false);
             grid.Cursor = e.X >= rectangle.Width - 11 &&
@@ -2000,16 +2012,18 @@ namespace DinkCel
                 return;
             }
             if (e.Button != MouseButtons.Left || grid.CurrentCell == null ||
-                e.RowIndex != grid.CurrentCell.RowIndex ||
-                e.ColumnIndex != grid.CurrentCell.ColumnIndex)
+                fillSelection.IsEmpty ||
+                e.RowIndex != fillSelection.Bottom - 1 ||
+                e.ColumnIndex != fillSelection.Right - 1)
                 return;
             Rectangle rectangle = grid.GetCellDisplayRectangle(
                 e.ColumnIndex, e.RowIndex, false);
             if (e.X < rectangle.Width - 11 || e.Y < rectangle.Height - 11)
                 return;
             fillDragging = true;
-            fillSourceRow = e.RowIndex;
-            fillSourceColumn = e.ColumnIndex;
+            fillDragSource = fillSelection;
+            fillSourceRow = fillSelection.Bottom - 1;
+            fillSourceColumn = fillSelection.Right - 1;
             fillTargetRow = e.RowIndex;
             fillTargetColumn = e.ColumnIndex;
             grid.Capture = true;
@@ -2092,7 +2106,7 @@ namespace DinkCel
             fillDragging = false;
             grid.Capture = false;
             grid.Cursor = Cursors.Default;
-            FillRange(fillSourceRow, fillSourceColumn, fillTargetRow, fillTargetColumn);
+            AutoFillSelection(fillDragSource, fillTargetRow, fillTargetColumn);
             grid.Invalidate();
         }
 
@@ -2139,9 +2153,8 @@ namespace DinkCel
 
         private void GridKeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Control && e.KeyCode == Keys.C && !grid.IsCurrentCellInEditMode)
+            if (HandleEditingShortcut(e.KeyData))
             {
-                CopySelected();
                 e.Handled = true;
                 e.SuppressKeyPress = true;
                 return;
@@ -2151,18 +2164,14 @@ namespace DinkCel
                 ClearSelectedCells();
                 e.Handled = true;
                 e.SuppressKeyPress = true;
-                return;
-            }
-            if (e.Control && e.KeyCode == Keys.V)
-            {
-                PasteSelected();
-                e.Handled = true;
-                e.SuppressKeyPress = true;
             }
         }
 
         protected override bool ProcessCmdKey(ref Message message, Keys keyData)
         {
+            if (addressBox.Focused || contentBox.Focused)
+                return base.ProcessCmdKey(ref message, keyData);
+            if (HandleEditingShortcut(keyData)) return true;
             if (keyData == (Keys.Control | Keys.Z))
             {
                 Undo();

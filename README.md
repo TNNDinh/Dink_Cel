@@ -12,7 +12,15 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.3.0
+## Tính năng v0.4.0 — Excel Editing
+
+- **Điều hướng:** Ctrl + mũi tên nhảy tới mép vùng dữ liệu; giữ Shift để mở rộng vùng chọn. Shift + mũi tên chỉnh vùng chọn từng ô. Ctrl + Home/End tới đầu bảng hoặc ô cuối có dữ liệu. F2 sửa ô; Enter, Shift + Enter, Tab và Shift + Tab chuyển ô; Esc hủy sửa ô hoặc thao tác cắt.
+- **Chọn ô:** Ctrl + Space chọn cả cột, Shift + Space chọn cả hàng, Ctrl + A chọn toàn sheet. Giữ Ctrl và nhấp ô để chọn nhiều vùng không liền nhau. Name Box nhận địa chỉ (`A1`), vùng (`A1:C5`), nhiều vùng (`A1:C5,E1:E3`) hoặc tên vùng đã đặt.
+- **Formula Bar:** hiển thị địa chỉ ô hiện tại và công thức gốc. Sửa trên thanh công thức, nhấn Enter để lưu hoặc Esc để hủy.
+- **Điền dữ liệu:** kéo Fill Handle ở góc dưới bên phải vùng chọn để điền số, ngày hoặc sao chép công thức với tham chiếu được dịch. Ctrl + D điền xuống, Ctrl + R điền sang phải; menu **Chỉnh sửa > Điền chuỗi tăng** tạo dãy theo bước số hoặc ngày.
+- **Clipboard:** Ctrl + C/X/V sao chép, cắt và dán nội dung cùng định dạng. Ctrl + Shift + V dán giá trị; menu **Chỉnh sửa** còn có dán công thức, định dạng và chuyển vị. Cắt/dán giữa các sheet có thể hoàn tác và làm lại.
+
+### Tính năng từ v0.3.0
 
 - **Table:** chọn vùng gồm hàng tiêu đề và dữ liệu, rồi tạo Table trong menu **Dữ liệu**. DinkCel tô màu tiêu đề và các hàng xen kẽ; khi lưu `.xlsx`, Table được ghi thành Excel Table thực.
 - **Charts:** tạo biểu đồ cột, đường hoặc tròn từ vùng có cột đầu làm nhãn. Xem biểu đồ trong ứng dụng, lưu ảnh PNG; `.xlsx` giữ biểu đồ để mở trong Excel/LibreOffice.
@@ -85,6 +93,7 @@ File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx`, `.xls` và `.o
 - XlsxFile.cs, XlsxStyles.cs và XlsxCharts.cs: đọc/ghi `.xlsx` và biểu đồ.
 - XlsFile.cs, OdsFile.cs, PdfFile.cs: đọc/ghi `.xls`, `.ods` và xuất PDF.
 - WorkbookFeatures.cs, SpreadsheetV3Ui.cs và SpreadsheetOutputUi.cs: metadata và giao diện v0.3.
+- SpreadsheetEditingUi.cs: điều hướng, Name Box, Formula Bar, vùng chọn, Fill và clipboard v0.4.
 - vendor/: thư viện NPOI, SharpZipLib, PDFsharp cùng giấy phép; nội dung giấy phép được nhúng trong `.exe` và xem qua menu **Trợ giúp**.
 - FormulaEngine.cs: phân tích và tính công thức, dịch tham chiếu khi kéo ô.
 - ThemePalette.cs: các mẫu màu và hộp chọn giao diện.

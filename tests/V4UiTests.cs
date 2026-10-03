@@ -1,0 +1,225 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Reflection;
+using System.Windows.Forms;
+
+namespace DinkCel
+{
+    internal static class V4UiTests
+    {
+        private static object Field(object target, string name)
+        { return target.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(target); }
+        private static object Call(object target, string name, params object[] args)
+        { return target.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance).Invoke(target, args); }
+        private static void Equal(object expected, object actual)
+        { if (!object.Equals(expected, actual)) throw new Exception("Expected " + expected + ", got " + actual); }
+        private static void Check(bool condition, string message)
+        { if (!condition) throw new Exception(message); }
+
+        [STAThread]
+        private static void Main()
+        {
+            try { Run(); }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(1); }
+        }
+
+        private static void Run()
+        {
+            EmbeddedDependencies.Install();
+            Application.EnableVisualStyles();
+            using (var form = new SpreadsheetForm(null))
+            {
+                form.Show(); Application.DoEvents();
+                var grid = (DataGridView)Field(form, "grid");
+                grid.Focus();
+                grid[0, 0].Value = "1"; grid[0, 1].Value = "2";
+                grid[0, 3].Value = "9";
+                Call(form, "SelectRectangle", new Rectangle(0, 0, 1, 1), 0, 0, false);
+                Call(form, "HandleEditingShortcut", Keys.Control | Keys.Down);
+                Equal(1, grid.CurrentCell.RowIndex);
+                Call(form, "HandleEditingShortcut", Keys.Control | Keys.Down);
+                Equal(3, grid.CurrentCell.RowIndex);
+                Call(form, "HandleEditingShortcut", Keys.Control | Keys.Home);
+                Equal(0, grid.CurrentCell.RowIndex);
+                Call(form, "HandleEditingShortcut", Keys.Control | Keys.Shift | Keys.Down);
+                Equal(2, grid.SelectedCells.Count);
+                Call(form, "HandleEditingShortcut", Keys.Shift | Keys.Right);
+                Equal(4, grid.SelectedCells.Count);
+                Call(form, "HandleEditingShortcut", Keys.Control | Keys.End);
+                Equal(3, grid.CurrentCell.RowIndex);
+                Call(form, "HandleEditingShortcut", Keys.Control | Keys.Space);
+                Equal(200, grid.SelectedCells.Count);
+                Call(form, "HandleEditingShortcut", Keys.Shift | Keys.Space);
+                Equal(26, grid.SelectedCells.Count);
+                Call(form, "HandleEditingShortcut", Keys.Control | Keys.A);
+                Equal(5200, grid.SelectedCells.Count);
+                Call(form, "SelectRectangle", new Rectangle(0, 0, 1, 1), 0, 0, false);
+                Equal(true, Call(grid, "ProcessDataGridViewKey", new KeyEventArgs(Keys.Control | Keys.Down)));
+                Equal(1, grid.CurrentCell.RowIndex);
+                Equal(true, Call(grid, "ProcessDialogKey", Keys.Tab));
+                Equal(1, grid.CurrentCell.ColumnIndex);
+                Console.WriteLine("v0.4 navigation passed.");
+
+                Equal(true, Call(form, "GoToAddress", "B2:D3,F5"));
+                Equal(7, grid.SelectedCells.Count);
+                Equal(5, grid.CurrentCell.ColumnIndex);
+                Equal(4, grid.CurrentCell.RowIndex);
+                Equal(false, Call(form, "GoToAddress", "AA201"));
+                Console.WriteLine("v0.4 name box passed.");
+
+                Call(form, "SelectRectangle", new Rectangle(1, 0, 1, 1), 1, 0, false);
+                var formulaBar = (TextBox)Field(form, "contentBox");
+                formulaBar.Text = "=A1+1";
+                Equal(true, Call(form, "CommitFormulaBar"));
+                Equal("=A1+1", grid[1, 0].Value);
+                Equal("2", grid[1, 0].FormattedValue);
+                Console.WriteLine("v0.4 formula bar passed.");
+                Call(form, "SelectRectangle", new Rectangle(1, 0, 1, 1), 1, 0, false);
+                Call(form, "CopySelected");
+                Call(form, "SelectRectangle", new Rectangle(3, 2, 1, 1), 3, 2, false);
+                Call(form, "PasteSelected");
+                Equal("=C3+1", grid[3, 2].Value);
+                Call(form, "Undo");
+                Equal(null, grid[3, 2].Value);
+                Call(form, "PasteValues");
+                Equal("2", grid[3, 2].Value);
+                Console.WriteLine("v0.4 clipboard paste passed.");
+                grid[1, 0].Style.BackColor = Color.LightBlue;
+                Call(form, "SelectRectangle", new Rectangle(1, 0, 1, 1), 1, 0, false);
+                Call(form, "CopySelected");
+                grid[9, 0].Value = "old";
+                Call(form, "SelectRectangle", new Rectangle(9, 0, 1, 1), 9, 0, false);
+                Call(form, "PasteFormats");
+                Equal("old", grid[9, 0].Value);
+                Equal(Color.LightBlue.ToArgb(), grid[9, 0].Style.BackColor.ToArgb());
+                Call(form, "PasteFormulas");
+                Equal("=I1+1", grid[9, 0].Value);
+                Equal(Color.LightBlue.ToArgb(), grid[9, 0].Style.BackColor.ToArgb());
+                grid[10, 0].Value = "X"; grid[11, 0].Value = "Y";
+                Call(form, "SelectRectangle", new Rectangle(10, 0, 2, 1), 10, 0, false);
+                Call(form, "CopySelected");
+                Call(form, "SelectRectangle", new Rectangle(12, 0, 1, 1), 12, 0, false);
+                Call(form, "PasteTranspose");
+                Equal("X", grid[12, 0].Value);
+                Equal("Y", grid[12, 1].Value);
+                Clipboard.SetText("\"a\tb\"\t42\r\nleft\tright");
+                Call(form, "SelectRectangle", new Rectangle(13, 0, 1, 1), 13, 0, false);
+                Call(form, "PasteSelected");
+                Equal("a\tb", grid[13, 0].Value);
+                Equal("right", grid[14, 1].Value);
+                grid[2, 0].Value = "3";
+                Equal(true, Call(form, "GoToAddress", "A1,C1"));
+                Equal(2, grid.SelectedCells.Count);
+                Call(form, "CopySelected");
+                Call(form, "SelectRectangle", new Rectangle(0, 9, 1, 1), 0, 9, false);
+                Call(form, "PasteSelected");
+                Equal("1", grid[0, 9].Value);
+                Equal(null, grid[1, 9].Value);
+                Equal("3", grid[2, 9].Value);
+                grid[2, 0].Value = null;
+                grid[21, 0].Value = "old";
+                Call(form, "SelectRectangle", new Rectangle(20, 0, 1, 1), 20, 0, false);
+                Call(form, "CopySelected");
+                Call(form, "SelectRectangle", new Rectangle(21, 0, 1, 1), 21, 0, false);
+                Call(form, "PasteSelected");
+                Check(string.IsNullOrEmpty(Convert.ToString(grid[21, 0].Value)),
+                    "Pasting a blank cell should clear the destination");
+
+                grid[4, 0].Value = "=A1";
+                Call(form, "SelectRectangle", new Rectangle(4, 0, 1, 3), 4, 0, false);
+                Call(form, "FillDown");
+                Equal("=A2", grid[4, 1].Value);
+                Equal("=A3", grid[4, 2].Value);
+                grid[15, 0].Value = "=A1";
+                Call(form, "SelectRectangle", new Rectangle(15, 0, 3, 1), 15, 0, false);
+                Call(form, "FillRight");
+                Equal("=B1", grid[16, 0].Value);
+                Equal("=C1", grid[17, 0].Value);
+                Call(form, "AutoFillSelection", new Rectangle(0, 0, 1, 2), 5, 0);
+                Equal("3", grid[0, 2].Value);
+                Equal("6", grid[0, 5].Value);
+                grid[5, 0].Value = "2026-10-03";
+                Call(form, "AutoFillSelection", new Rectangle(5, 0, 1, 1), 2, 5);
+                Equal("2026-10-04", grid[5, 1].Value);
+                Equal("2026-10-05", grid[5, 2].Value);
+                Console.WriteLine("v0.4 fill handle passed.");
+
+                grid[7, 0].Value = "1"; grid[7, 1].Value = "3";
+                Call(form, "SelectRectangle", new Rectangle(7, 0, 1, 4), 7, 0, false);
+                Call(form, "FillSeries");
+                Equal("3", grid[7, 1].Value);
+                Equal("5", grid[7, 2].Value);
+                Equal("7", grid[7, 3].Value);
+                Console.WriteLine("v0.4 series passed.");
+
+                grid.Focus();
+                Call(form, "SelectRectangle", new Rectangle(18, 0, 1, 1), 18, 0, false);
+                Equal(true, Call(form, "HandleEditingShortcut", Keys.F2));
+                Check(grid.IsCurrentCellInEditMode, "F2 should edit the current cell");
+                ((TextBox)grid.EditingControl).Text = "typed";
+                Equal(true, Call(form, "HandleEditingShortcut", Keys.Enter));
+                Equal("typed", grid[18, 0].Value);
+                Equal(1, grid.CurrentCell.RowIndex);
+                Call(form, "HandleEditingShortcut", Keys.Shift | Keys.Enter);
+                Equal(0, grid.CurrentCell.RowIndex);
+                Call(form, "HandleEditingShortcut", Keys.Tab);
+                Equal(19, grid.CurrentCell.ColumnIndex);
+                Call(form, "HandleEditingShortcut", Keys.Shift | Keys.Tab);
+                Equal(18, grid.CurrentCell.ColumnIndex);
+                Call(form, "HandleEditingShortcut", Keys.F2);
+                ((TextBox)grid.EditingControl).Text = "cancelled";
+                Call(form, "HandleEditingShortcut", Keys.Escape);
+                Equal("typed", grid[18, 0].Value);
+                Console.WriteLine("v0.4 edit keys passed.");
+
+                Call(form, "SelectRectangle", new Rectangle(0, 0, 1, 1), 0, 0, false);
+                Call(form, "CutSelected");
+                Call(form, "SelectRectangle", new Rectangle(2, 0, 1, 1), 2, 0, false);
+                Call(form, "PasteSelected");
+                Equal(null, grid[0, 0].Value);
+                Equal("1", grid[2, 0].Value);
+                Call(form, "Undo");
+                Equal("1", grid[0, 0].Value);
+                Equal(null, grid[2, 0].Value);
+
+                Call(form, "SelectRectangle", new Rectangle(0, 0, 1, 1), 0, 0, false);
+                Call(form, "CutSelected");
+                Call(form, "AddSheet");
+                Call(form, "PasteSelected");
+                Equal("1", grid[0, 0].Value);
+                Call(form, "Undo");
+                Equal(null, grid[0, 0].Value);
+                Call(form, "SwitchSheet", 0);
+                Equal("1", grid[0, 0].Value);
+                Call(form, "SwitchSheet", 1);
+                Call(form, "Redo");
+                Equal("1", grid[0, 0].Value);
+                Call(form, "SwitchSheet", 0);
+                Equal(null, grid[0, 0].Value);
+                grid[0, 0].Value = "99";
+                Call(form, "SwitchSheet", 1);
+                Call(form, "Undo");
+                Call(form, "SwitchSheet", 0);
+                Equal("99", grid[0, 0].Value);
+                Call(form, "SwitchSheet", 1);
+                Call(form, "Redo");
+                Call(form, "SwitchSheet", 0);
+                Equal("99", grid[0, 0].Value);
+                Call(form, "SelectRectangle", new Rectangle(1, 0, 1, 1), 1, 0, false);
+                formulaBar.Text = "saved from formula bar";
+                Call(form, "SaveActiveSheet");
+                Equal("saved from formula bar", grid[1, 0].Value);
+                ((List<NamedRange>)Field(form, "namedRanges")).Add(new NamedRange
+                { Name = "MainValues", Sheet = "Sheet1", Range = new Rectangle(0, 1, 1, 2) });
+                Call(form, "SwitchSheet", 1);
+                Equal(true, Call(form, "GoToAddress", "MainValues"));
+                Equal(2, grid.SelectedCells.Count);
+                Equal(1, grid.CurrentCell.RowIndex);
+
+            }
+            Console.WriteLine("v0.4 UI: navigation, ranges, formula bar, fill, clipboard, undo passed.");
+        }
+    }
+}

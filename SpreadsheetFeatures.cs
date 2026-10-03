@@ -47,8 +47,8 @@ namespace DinkCel
             AddMenuItem(cells, "Cố định tại ô đã chọn", Keys.None, FreezeAtCell);
             AddMenuItem(cells, "Bỏ cố định", Keys.None, delegate { freezeRow = freezeColumn = 0; ApplyFreezeAndFilter(); RecordChange(); MarkDirty(); });
             AddMenuItem(cells, "Tô màu có điều kiện...", Keys.None, ConditionalColor);
-            AddMenuItem(cells, "Dán chỉ giá trị", Keys.Control | Keys.Shift | Keys.V, delegate { PasteSpecial(false); });
-            AddMenuItem(cells, "Dán chỉ định dạng", Keys.None, delegate { PasteSpecial(true); });
+            AddMenuItem(cells, "Dán chỉ giá trị", Keys.None, PasteValues);
+            AddMenuItem(cells, "Dán chỉ định dạng", Keys.None, PasteFormats);
             menu.Items.Add(cells);
             var fileMenu = menu.Items[0] as ToolStripMenuItem;
             if (fileMenu != null)
@@ -62,6 +62,7 @@ namespace DinkCel
 
         private void SaveActiveSheet()
         {
+            CommitFormulaBar();
             if (sheets.Count > activeSheetIndex)
                 sheets[activeSheetIndex] = CaptureSheet();
         }
@@ -120,6 +121,7 @@ namespace DinkCel
         private void SwitchSheet(int index)
         {
             if (index == activeSheetIndex || index < 0 || index >= sheets.Count) return;
+            if (!CommitFormulaBar()) return;
             grid.EndEdit();
             bool unsaved = dirty;
             if (unsaved) otherSheetsDirty = true;
@@ -231,6 +233,7 @@ namespace DinkCel
         private void DeleteSheet()
         {
             if (sheets.Count == 1) return;
+            crossSheetMoves.Clear();
             string deletedName = sheets[activeSheetIndex].Name;
             sheets.RemoveAt(activeSheetIndex);
             sheetHistories.RemoveAt(activeSheetIndex);
@@ -593,24 +596,7 @@ namespace DinkCel
 
         private void PasteSpecial(bool formatOnly)
         {
-            if (grid.CurrentCell == null) return;
-            if (copiedCells == null || !Clipboard.ContainsText() ||
-                !string.Equals(Clipboard.GetText(), copiedClipboardText, StringComparison.Ordinal))
-            { if (!formatOnly) PasteSelected(); return; }
-            int startRow = grid.CurrentCell.RowIndex, startColumn = grid.CurrentCell.ColumnIndex;
-            loading = true;
-            try
-            {
-                for (int r = 0; r < copiedCells.GetLength(0) && startRow + r < RowCount; r++)
-                    for (int c = 0; c < copiedCells.GetLength(1) && startColumn + c < ColumnCount; c++)
-                    {
-                        var cell = grid[startColumn + c, startRow + r];
-                        if (formatOnly) cell.Style = new DataGridViewCellStyle(copiedCells[r, c].Style);
-                        else cell.Value = copiedDisplays[r, c];
-                    }
-            }
-            finally { loading = false; }
-            Recalculate(); RecordChange(); MarkDirty();
+            PasteClipboard(formatOnly ? PasteKind.Formats : PasteKind.Values);
         }
     }
 }
