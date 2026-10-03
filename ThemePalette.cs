@@ -22,6 +22,16 @@ namespace DinkCel
         public readonly Color Selection;
         public readonly Color Logo;
         public readonly bool Dark;
+        public Color Hover { get { return Mix(Chrome, Accent, Dark ? 0.16F : 0.07F); } }
+        public Color AccentSoft { get { return Mix(Sheet, Accent, Dark ? 0.24F : 0.11F); } }
+        public Color GridLine { get { return Mix(Sheet, Border, Dark ? 0.46F : 0.55F); } }
+
+        private static Color Mix(Color first, Color second, float weight)
+        {
+            return Color.FromArgb((int)(first.R * (1 - weight) + second.R * weight),
+                (int)(first.G * (1 - weight) + second.G * weight),
+                (int)(first.B * (1 - weight) + second.B * weight));
+        }
 
         private ThemePalette(string id, string name, string description,
             string surface, string chrome, string sheet, string header,
@@ -47,34 +57,39 @@ namespace DinkCel
 
         public static readonly ThemePalette[] All = new ThemePalette[]
         {
-            new ThemePalette("ocean", "Xanh dịu", "Mát mắt, dễ đọc",
-                "#DCE7F3", "#E6EEF8", "#E8F0F8", "#DDE8F4",
-                "#BED5F4", "#C2D1E0", "#1E2B3A", "#5C6B7A",
-                "#2563EB", "#CFE3FF", "#168A5A", false),
-            new ThemePalette("mint", "Bạc hà", "Sáng và nhẹ",
-                "#D9EBDF", "#DCEFE5", "#E6F5EC", "#D0E8D8",
-                "#ACDCC2", "#B5D5C1", "#1B3328", "#557166",
-                "#168A57", "#C4EBD5", "#168A57", false),
-            new ThemePalette("sand", "Kem ấm", "Dịu vào buổi tối",
-                "#EEE2D1", "#F3E8D8", "#F8EEDF", "#EBDDC9",
-                "#E7C59B", "#D7C6AE", "#392C20", "#776A5A",
-                "#BB6B22", "#F3DEBF", "#BB6B22", false),
-            new ThemePalette("lavender", "Tím sương", "Nhẹ và mềm",
-                "#E4DCEE", "#EBE6F4", "#F1EBFA", "#E2D9F1",
-                "#D3BFF2", "#D2C5E2", "#30273D", "#6D617A",
-                "#7851B8", "#E0D0F5", "#7851B8", false),
-            new ThemePalette("slate", "Xám xanh", "Trung tính",
-                "#D4DEE7", "#DCE3EA", "#E9EEF3", "#D3DDE6",
-                "#B9CDDD", "#BCCBD8", "#1D2A33", "#5D6B75",
-                "#3B6F91", "#D1E1ED", "#3B6F91", false),
-            new ThemePalette("night", "Tối dịu", "Giảm chói",
-                "#202A36", "#263241", "#2D3B4C", "#344456",
-                "#3B5B7A", "#4B5D70", "#E8EFF7", "#B4C1CF",
-                "#81B6FF", "#3A5068", "#2EA975", true)
+            new ThemePalette("light", "DinkCel Light", "Sáng dịu, tập trung dữ liệu",
+                "#F4F5F8", "#FBFBFD", "#FFFFFF", "#F8F9FC",
+                "#E8E7FF", "#DCE0E9", "#222437", "#777C90",
+                "#6D5EF7", "#ECEAFF", "#6957EA", false),
+            new ThemePalette("dark", "DinkCel Dark", "Than chì, tím dịu",
+                "#1A1C25", "#242633", "#20222D", "#292C39",
+                "#3B385E", "#3A3D4E", "#EFF0F7", "#A4A7B8",
+                "#A497FF", "#3D385B", "#8C7CFF", true),
+            new ThemePalette("midnight", "DinkCel Midnight", "Đen sâu, điểm nhấn cyan",
+                "#11131B", "#1A1D29", "#171A24", "#202431",
+                "#2A3A53", "#303647", "#F1F4FC", "#9DA7BA",
+                "#73CEEB", "#254655", "#6E9FFF", true),
+            new ThemePalette("paper", "DinkCel Paper", "Trắng ấm, mực nâu",
+                "#F3F0E8", "#FBF9F3", "#FFFEFA", "#F7F3EA",
+                "#EAE5D2", "#E2DCCD", "#3B362F", "#827C70",
+                "#86724D", "#F0EAD7", "#816D4F", false),
+            new ThemePalette("solar", "DinkCel Solar", "Ấm áp, cam tinh tế",
+                "#F9F4EC", "#FFFDF8", "#FFFFFF", "#FCF7EF",
+                "#FFE9D2", "#E9E0D4", "#352B29", "#8A7972",
+                "#E57E36", "#FFF0DD", "#E0783E", false),
+            new ThemePalette("mint", "DinkCel Mint", "Xanh mát, gọn gàng",
+                "#EFF6F3", "#FAFDFC", "#FFFFFF", "#F4FAF7",
+                "#DCF5E9", "#D6E6DF", "#21372F", "#6C8278",
+                "#279C79", "#E2F5ED", "#31A981", false)
         };
 
         public static ThemePalette Find(string id)
         {
+            if (String.Equals(id, "ocean", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(id, "lavender", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(id, "slate", StringComparison.OrdinalIgnoreCase)) id = "light";
+            else if (String.Equals(id, "night", StringComparison.OrdinalIgnoreCase)) id = "dark";
+            else if (String.Equals(id, "sand", StringComparison.OrdinalIgnoreCase)) id = "paper";
             foreach (ThemePalette item in All)
                 if (String.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase))
                     return item;
@@ -185,19 +200,19 @@ namespace DinkCel
             MinimizeBox = false;
             ShowIcon = false;
             StartPosition = FormStartPosition.CenterParent;
-            BackColor = Color.FromArgb(241, 245, 249);
+            BackColor = current.Surface;
             Font = new Font("Segoe UI", 10F);
 
             var title = new Label();
             title.Text = "Chọn màu giao diện";
             title.Font = new Font("Segoe UI", 16F, FontStyle.Bold);
-            title.ForeColor = Color.FromArgb(30, 41, 59);
+            title.ForeColor = current.Text;
             title.Bounds = new Rectangle(18, 15, 500, 35);
             Controls.Add(title);
 
             var hint = new Label();
             hint.Text = "Chọn một mẫu để đổi cả cửa sổ và bảng tính.";
-            hint.ForeColor = Color.FromArgb(86, 102, 119);
+            hint.ForeColor = current.Muted;
             hint.Bounds = new Rectangle(20, 53, 550, 25);
             Controls.Add(hint);
 
@@ -224,6 +239,9 @@ namespace DinkCel
             cancel.Size = new Size(84, 28);
             cancel.Location = new Point(550, 440);
             cancel.DialogResult = DialogResult.Cancel;
+            cancel.FlatStyle = FlatStyle.Flat;
+            cancel.BackColor = current.Hover;
+            cancel.ForeColor = current.Text;
             Controls.Add(cancel);
             CancelButton = cancel;
         }

@@ -288,6 +288,8 @@ namespace DinkCel
         private bool HandleEditingShortcut(Keys keyData)
         {
             if (addressBox.Focused || contentBox.Focused || !grid.ContainsFocus) return false;
+            lastInputKeyboard = true;
+            floatingActions.Visible = false;
             Keys key = keyData & Keys.KeyCode;
             bool control = (keyData & Keys.Control) != 0;
             bool shift = (keyData & Keys.Shift) != 0;
@@ -392,8 +394,18 @@ namespace DinkCel
             var clipboardData = new DataObject();
             clipboardData.SetData(DataFormats.UnicodeText, text.ToString());
             clipboardData.SetData("DinkCel.Cells", copiedToken);
-            Clipboard.SetDataObject(clipboardData, true);
             copiedClipboardText = text.ToString();
+            try
+            {
+                Clipboard.SetDataObject(clipboardData, true, 4, 80);
+                clipboardFallback = false;
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                // Another desktop app can temporarily own the clipboard. Keep DinkCel's internal copy usable.
+                clipboardFallback = true;
+                clipboardFallbackSequence = GetClipboardSequenceNumber();
+            }
             cutPending = cut;
             status.Text = cut ? "Đã cắt vùng chọn; chọn ô đích để dán" : "Đã sao chép vùng chọn";
         }
@@ -437,14 +449,24 @@ namespace DinkCel
         private void PasteClipboard(PasteKind kind)
         {
             if (grid.CurrentCell == null) return;
-            bool internalCopy = copiedCells != null && copiedMask != null &&
-                Clipboard.ContainsData("DinkCel.Cells") &&
-                string.Equals(Convert.ToString(Clipboard.GetData("DinkCel.Cells")),
-                    copiedToken, StringComparison.Ordinal);
-            if (!internalCopy && !Clipboard.ContainsText() && !Clipboard.ContainsText(TextDataFormat.Html)) return;
-            string text = Clipboard.ContainsText() ? Clipboard.GetText() : copiedClipboardText;
+            bool internalCopy = copiedCells != null && copiedMask != null && clipboardFallback &&
+                GetClipboardSequenceNumber() == clipboardFallbackSequence;
+            bool hasText = false, hasHtml = false;
+            try
+            {
+                internalCopy |= copiedCells != null && copiedMask != null &&
+                    Clipboard.ContainsData("DinkCel.Cells") &&
+                    string.Equals(Convert.ToString(Clipboard.GetData("DinkCel.Cells")),
+                        copiedToken, StringComparison.Ordinal);
+                hasText = Clipboard.ContainsText();
+                hasHtml = Clipboard.ContainsText(TextDataFormat.Html);
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            { if (!internalCopy) return; }
+            if (!internalCopy && !hasText && !hasHtml) return;
+            string text = hasText ? Clipboard.GetText() : copiedClipboardText;
             List<List<CellState>> externalHtml = null;
-            if (!internalCopy && Clipboard.ContainsText(TextDataFormat.Html))
+            if (!internalCopy && hasHtml)
                 externalHtml = ParseExcelHtml(Clipboard.GetText(TextDataFormat.Html));
             if (externalHtml != null && externalHtml.Count == 0) externalHtml = null;
             if (kind == PasteKind.Formats && !internalCopy && externalHtml == null) return;

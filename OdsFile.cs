@@ -90,7 +90,8 @@ namespace DinkCel
                 var result = new WorkbookSnapshot(); result.Sheets.Clear();
                 foreach (XElement table in document.Descendants(Table + "table"))
                 {
-                    var sheet = new SheetSnapshot { Name = (string)table.Attribute(Table + "name") ?? "Sheet" };
+                    var sheet = new SheetSnapshot { Name = (string)table.Attribute(Table + "name") ?? "Sheet",
+                        Hidden = string.Equals((string)table.Attribute(Table + "visibility"), "collapse", StringComparison.OrdinalIgnoreCase) };
                     int r = 0;
                     foreach (XElement row in table.Elements(Table + "table-row"))
                     {
@@ -223,6 +224,7 @@ namespace DinkCel
                     foreach (SheetSnapshot sheet in workbook.Sheets)
                     {
                         var table = new XElement(Table + "table", new XAttribute(Table + "name", sheet.Name));
+                        if (sheet.Hidden) table.SetAttributeValue(Table + "visibility", "collapse");
                         int maxRow = sheet.Cells.Count == 0 ? 0 : sheet.Cells.Keys.Max() / columns;
                         foreach (Rectangle merge in sheet.Merges) maxRow = Math.Max(maxRow, merge.Bottom - 1);
                         var merged = new Dictionary<int, Rectangle>();

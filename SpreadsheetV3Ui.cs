@@ -41,14 +41,18 @@ namespace DinkCel
             if (values.Count == 0) return null;
             using (var form = new Form { Text = title, Width = 420, Height = 145,
                 StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog,
-                MaximizeBox = false, MinimizeBox = false })
+                MaximizeBox = false, MinimizeBox = false,
+                BackColor = theme.Chrome, ForeColor = theme.Text, Font = DinkDesign.Ui })
             {
                 var combo = new ComboBox { Left = 12, Top = 12, Width = 380,
-                    DropDownStyle = ComboBoxStyle.DropDownList };
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = theme.Sheet, ForeColor = theme.Text };
                 foreach (string value in values) combo.Items.Add(value);
                 combo.SelectedIndex = 0;
-                var ok = new Button { Text = "OK", Left = 312, Top = 48,
-                    Width = 80, DialogResult = DialogResult.OK };
+                var ok = DinkDesign.Button("OK", delegate { });
+                ok.SetBounds(312, 48, 80, 28);
+                ok.AutoSize = false; ok.DialogResult = DialogResult.OK;
+                ok.BackColor = theme.AccentSoft; ok.ForeColor = theme.Accent;
                 form.Controls.Add(combo); form.Controls.Add(ok); form.AcceptButton = ok;
                 return form.ShowDialog(this) == DialogResult.OK ? combo.Text : null;
             }
@@ -230,10 +234,16 @@ namespace DinkCel
         private void ShowChart(ChartDefinition definition)
         {
             using (var form = new Form { Text = definition.Title, Width = 900, Height = 620,
-                StartPosition = FormStartPosition.CenterParent })
+                StartPosition = FormStartPosition.CenterParent, BackColor = theme.Surface,
+                ForeColor = theme.Text })
             {
                 var chart = BuildChart(definition);
-                var save = new Button { Text = "Lưu PNG...", Dock = DockStyle.Bottom, Height = 36 };
+                var save = DinkDesign.Button("Lưu PNG...", delegate { });
+                save.AutoSize = false;
+                save.Dock = DockStyle.Bottom;
+                save.Height = 36;
+                save.BackColor = theme.AccentSoft;
+                save.ForeColor = theme.Text;
                 save.Click += delegate
                 {
                     using (var dialog = new SaveFileDialog { Filter = "PNG (*.png)|*.png", DefaultExt = "png" })
@@ -247,10 +257,21 @@ namespace DinkCel
 
         private Chart BuildChart(ChartDefinition definition)
         {
-            var chart = new Chart { Dock = DockStyle.Fill, BackColor = Color.White };
+            var chart = new Chart { Dock = DockStyle.Fill, BackColor = theme.Sheet,
+                ForeColor = theme.Text };
             chart.ChartAreas.Add(new ChartArea("Main"));
             chart.Legends.Add(new Legend("Legend"));
             chart.Titles.Add(definition.Title);
+            chart.ChartAreas[0].BackColor = theme.Sheet;
+            chart.ChartAreas[0].AxisX.LabelStyle.ForeColor = theme.Muted;
+            chart.ChartAreas[0].AxisY.LabelStyle.ForeColor = theme.Muted;
+            chart.ChartAreas[0].AxisX.LineColor = theme.Border;
+            chart.ChartAreas[0].AxisY.LineColor = theme.Border;
+            chart.ChartAreas[0].AxisX.MajorGrid.LineColor = theme.GridLine;
+            chart.ChartAreas[0].AxisY.MajorGrid.LineColor = theme.GridLine;
+            chart.Legends[0].BackColor = theme.Sheet;
+            chart.Legends[0].ForeColor = theme.Text;
+            chart.Titles[0].ForeColor = theme.Text;
             Rectangle range = definition.Range;
             for (int c = range.Left + 1; c < range.Right; c++)
             {
@@ -259,6 +280,9 @@ namespace DinkCel
                 if (string.IsNullOrEmpty(seriesName)) seriesName = grid.Columns[c].HeaderText;
                 var series = new Series(seriesName) { ChartType = definition.Kind == "Line" ?
                     SeriesChartType.Line : definition.Kind == "Pie" ? SeriesChartType.Pie : SeriesChartType.Column };
+                Color[] chartColors = { theme.Accent, theme.Logo, theme.Dark ? Color.Turquoise : Color.Teal,
+                    theme.Dark ? Color.Orange : Color.DarkOrange, theme.Muted };
+                series.Color = chartColors[(c - range.Left - 1) % chartColors.Length];
                 for (int r = range.Top + 1; r < range.Bottom; r++)
                 {
                     string label = Convert.ToString(grid[range.Left, r].FormattedValue) ?? "";
@@ -268,6 +292,9 @@ namespace DinkCel
                         double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out value))
                         series.Points.AddXY(label, value);
                 }
+                if (definition.Kind == "Pie")
+                    for (int point = 0; point < series.Points.Count; point++)
+                        series.Points[point].Color = chartColors[point % chartColors.Length];
                 chart.Series.Add(series);
             }
             return chart;

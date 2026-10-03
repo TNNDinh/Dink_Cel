@@ -100,22 +100,160 @@ namespace DinkCel
         private void RefreshSheetTabs()
         {
             sheetTabs.Controls.Clear();
+            sheetTabs.AllowDrop = true;
             for (int i = 0; i < sheets.Count; i++)
             {
                 int index = i;
-                var button = new Button();
+                if (sheets[i].Hidden) continue;
+                var button = new DinkButton { AccentUnderline = index == activeSheetIndex };
                 button.Text = sheets[i].Name;
                 button.AutoSize = true;
-                button.Height = 30;
+                button.Height = 29;
                 button.FlatStyle = FlatStyle.Flat;
-                button.BackColor = index == activeSheetIndex ? theme.Accent : theme.Chrome;
-                button.ForeColor = index == activeSheetIndex ? Color.White : theme.Text;
+                button.FlatAppearance.BorderSize = 0;
+                button.Font = index == activeSheetIndex ? DinkDesign.UiBold : DinkDesign.Ui;
+                button.Padding = new Padding(8, 1, 8, 1);
+                button.Margin = new Padding(2, 2, 2, 1);
+                button.BackColor = index == activeSheetIndex ? theme.AccentSoft : theme.Chrome;
+                button.ForeColor = index == activeSheetIndex ? theme.Accent :
+                    sheets[i].TabColor.IsEmpty ? theme.Text : sheets[i].TabColor;
+                button.Tag = index;
                 button.Click += delegate { SwitchSheet(index); };
+                button.ContextMenuStrip = SheetTabContext(index);
+                Point dragOrigin = Point.Empty;
+                button.MouseDown += delegate(object sender, MouseEventArgs e) { dragOrigin = e.Location; };
+                button.MouseMove += delegate(object sender, MouseEventArgs e)
+                {
+                    if (e.Button == MouseButtons.Left &&
+                        Math.Abs(e.X - dragOrigin.X) + Math.Abs(e.Y - dragOrigin.Y) > 8)
+                        button.DoDragDrop(index, DragDropEffects.Move);
+                };
                 sheetTabs.Controls.Add(button);
             }
-            var add = new Button { Text = "+", Width = 30, Height = 30, FlatStyle = FlatStyle.Flat };
-            add.Click += delegate { AddSheet(); };
+            var add = DinkDesign.Button("+", delegate { AddSheet(); });
+            add.BackColor = theme.Chrome;
+            add.ForeColor = theme.Accent;
             sheetTabs.Controls.Add(add);
+            var addContext = new ContextMenuStrip { BackColor = theme.Chrome, ForeColor = theme.Text };
+            addContext.Renderer = new ToolStripProfessionalRenderer(new DinkMenuColors(theme));
+            addContext.Items.Add("Thêm trang tính", null, delegate { AddSheet(); });
+            addContext.Items.Add("Hiện trang ẩn...", null, delegate { UnhideSheet(); });
+            add.ContextMenuStrip = addContext;
+            sheetTabs.DragEnter -= SheetTabDragEnter;
+            sheetTabs.DragDrop -= SheetTabDragDrop;
+            sheetTabs.DragEnter += SheetTabDragEnter;
+            sheetTabs.DragDrop += SheetTabDragDrop;
+        }
+
+        private ContextMenuStrip SheetTabContext(int index)
+        {
+            var context = new ContextMenuStrip { BackColor = theme.Chrome, ForeColor = theme.Text };
+            context.Renderer = new ToolStripProfessionalRenderer(new DinkMenuColors(theme));
+            context.Items.Add("Đổi tên", null, delegate { SwitchSheet(index); RenameSheet(); });
+            context.Items.Add("Nhân bản", null, delegate { DuplicateSheet(index); });
+            context.Items.Add("Sao chép", null, delegate { DuplicateSheet(index); });
+            context.Items.Add("Chuyển sang trái", null, delegate { MoveSheet(index, index - 1); });
+            context.Items.Add("Chuyển sang phải", null, delegate { MoveSheet(index, index + 1); });
+            context.Items.Add("Ẩn", null, delegate { HideSheet(index); });
+            context.Items.Add("Hiện trang ẩn...", null, delegate { UnhideSheet(); });
+            context.Items.Add("Màu tab...", null, delegate { ChooseSheetTabColor(index); });
+            context.Items.Add(new ToolStripSeparator());
+            context.Items.Add("Xóa", null, delegate { SwitchSheet(index); DeleteSheet(); });
+            return context;
+        }
+
+        private void SheetTabDragEnter(object sender, DragEventArgs e)
+        {
+            e.Effect = e.Data.GetDataPresent(typeof(int)) ? DragDropEffects.Move : DragDropEffects.None;
+        }
+
+        private void SheetTabDragDrop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(typeof(int))) return;
+            int source = (int)e.Data.GetData(typeof(int));
+            Point point = sheetTabs.PointToClient(new Point(e.X, e.Y));
+            Control target = sheetTabs.GetChildAtPoint(point);
+            if (target != null && target.Tag is int) MoveSheet(source, (int)target.Tag);
+        }
+
+        private void MoveSheet(int source, int target)
+        {
+            if (source < 0 || source >= sheets.Count || target < 0 || target >= sheets.Count || source == target) return;
+            SaveActiveSheet(); StoreHistory();
+            SheetState state = sheets[source];
+            SheetHistory history = sheetHistories[source];
+            sheets.RemoveAt(source); sheetHistories.RemoveAt(source);
+            sheets.Insert(target, state); sheetHistories.Insert(target, history);
+            if (activeSheetIndex == source) activeSheetIndex = target;
+            else if (source < activeSheetIndex && target >= activeSheetIndex) activeSheetIndex--;
+            else if (source > activeSheetIndex && target <= activeSheetIndex) activeSheetIndex++;
+            RefreshSheetTabs(); MarkDirty(); otherSheetsDirty = true;
+        }
+
+        private void DuplicateSheet(int index)
+        {
+            SaveActiveSheet(); StoreHistory();
+            SheetState source = sheets[index];
+            var copy = new SheetState { Name = source.Name + " Copy", Background = source.Background,
+                TabColor = source.TabColor,
+                ThemeId = source.ThemeId, FreezeRow = source.FreezeRow,
+                FreezeColumn = source.FreezeColumn, FilterColumn = source.FilterColumn,
+                FilterValue = source.FilterValue };
+            int number = 2;
+            while (sheets.Any(s => string.Equals(s.Name, copy.Name, StringComparison.OrdinalIgnoreCase)))
+                copy.Name = source.Name + " Copy " + number++;
+            Array.Copy(source.RowHeights, copy.RowHeights, RowCount);
+            Array.Copy(source.ColumnWidths, copy.ColumnWidths, ColumnCount);
+            Array.Copy(source.HiddenRows, copy.HiddenRows, RowCount);
+            Array.Copy(source.HiddenColumns, copy.HiddenColumns, ColumnCount);
+            foreach (var pair in source.Cells)
+                copy.Cells.Add(pair.Key, new CellState { Value = pair.Value.Value,
+                    Style = pair.Value.Style == null ? null : new DataGridViewCellStyle(pair.Value.Style),
+                    Extras = CellExtras.Copy(pair.Value.Extras) });
+            copy.Merges.AddRange(source.Merges);
+            copy.Rules.AddRange(source.Rules);
+            copy.Tables.AddRange(source.Tables);
+            copy.Charts.AddRange(source.Charts);
+            copy.Validations.AddRange(source.Validations);
+            sheets.Insert(index + 1, copy);
+            sheetHistories.Insert(index + 1, new SheetHistory());
+            if (activeSheetIndex > index) activeSheetIndex++;
+            SwitchSheet(index + 1);
+            MarkDirty(); otherSheetsDirty = true;
+        }
+
+        private void HideSheet(int index)
+        {
+            if (sheets.Count(s => !s.Hidden) <= 1) return;
+            if (index == activeSheetIndex)
+            {
+                int next = sheets.FindIndex(s => !s.Hidden && s != sheets[index]);
+                SwitchSheet(next);
+            }
+            sheets[index].Hidden = true;
+            RefreshSheetTabs(); MarkDirty(); otherSheetsDirty = true;
+        }
+
+        private void UnhideSheet()
+        {
+            List<string> options = sheets.Where(s => s.Hidden).Select(s => s.Name).ToList();
+            if (options.Count == 0) return;
+            string choice = ChooseOption("Hiện trang tính", options);
+            SheetState sheet = sheets.FirstOrDefault(s => s.Hidden && s.Name == choice);
+            if (sheet == null) return;
+            sheet.Hidden = false;
+            RefreshSheetTabs(); MarkDirty(); otherSheetsDirty = true;
+        }
+
+        private void ChooseSheetTabColor(int index)
+        {
+            using (var picker = new ColorDialog { Color = sheets[index].TabColor.IsEmpty ? theme.Accent : sheets[index].TabColor,
+                FullOpen = true })
+            {
+                if (picker.ShowDialog(this) != DialogResult.OK) return;
+                sheets[index].TabColor = picker.Color;
+                RefreshSheetTabs(); MarkDirty(); otherSheetsDirty = true;
+            }
         }
 
         private void SwitchSheet(int index)
@@ -232,7 +370,8 @@ namespace DinkCel
 
         private void DeleteSheet()
         {
-            if (sheets.Count == 1) return;
+            if (sheets.Count == 1 || (!sheets[activeSheetIndex].Hidden &&
+                sheets.Count(s => !s.Hidden) <= 1)) return;
             crossSheetMoves.Clear();
             string deletedName = sheets[activeSheetIndex].Name;
             sheets.RemoveAt(activeSheetIndex);
@@ -250,10 +389,15 @@ namespace DinkCel
 
         private string Prompt(string title, string initial)
         {
-            using (var form = new Form { Text = title, Width = 420, Height = 145, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false })
+            using (var form = new Form { Text = title, Width = 420, Height = 145, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+                BackColor = theme.Chrome, ForeColor = theme.Text, Font = DinkDesign.Ui })
             {
-                var box = new TextBox { Left = 12, Top = 12, Width = 380, Text = initial };
-                var ok = new Button { Text = "OK", Left = 312, Top = 48, Width = 80, DialogResult = DialogResult.OK };
+                var box = new TextBox { Left = 12, Top = 12, Width = 380, Text = initial,
+                    BackColor = theme.Sheet, ForeColor = theme.Text };
+                var ok = DinkDesign.Button("OK", delegate { });
+                ok.SetBounds(312, 48, 80, 28);
+                ok.AutoSize = false; ok.DialogResult = DialogResult.OK;
+                ok.BackColor = theme.AccentSoft; ok.ForeColor = theme.Accent;
                 form.Controls.Add(box); form.Controls.Add(ok); form.AcceptButton = ok;
                 return form.ShowDialog(this) == DialogResult.OK ? box.Text : null;
             }
@@ -261,7 +405,8 @@ namespace DinkCel
 
         private static SheetState StateFromSnapshot(SheetSnapshot source)
         {
-            var state = new SheetState { Name = source.Name, Background = source.Background, ThemeId = source.ThemeId,
+            var state = new SheetState { Name = source.Name, Hidden = source.Hidden, TabColor = source.TabColor,
+                Background = source.Background, ThemeId = source.ThemeId,
                 FreezeRow = source.FreezeRow, FreezeColumn = source.FreezeColumn,
                 FilterColumn = source.FilterColumn, FilterValue = source.FilterValue };
             state.Merges.AddRange(source.Merges);
@@ -295,7 +440,8 @@ namespace DinkCel
 
         private SheetSnapshot SnapshotFromState(SheetState source)
         {
-            var result = new SheetSnapshot { Name = source.Name, Background = source.Background, ThemeId = source.ThemeId,
+            var result = new SheetSnapshot { Name = source.Name, Hidden = source.Hidden, TabColor = source.TabColor,
+                Background = source.Background, ThemeId = source.ThemeId,
                 FreezeRow = source.FreezeRow, FreezeColumn = source.FreezeColumn,
                 FilterColumn = source.FilterColumn, FilterValue = source.FilterValue };
             result.Merges.AddRange(source.Merges);
@@ -330,6 +476,8 @@ namespace DinkCel
                 new XAttribute("freezeColumn", sheet.FreezeColumn), new XAttribute("filterColumn", sheet.FilterColumn),
                 new XAttribute("filterValue", sheet.FilterValue));
             if (!sheet.Background.IsEmpty) root.SetAttributeValue("background", ColorTranslator.ToHtml(sheet.Background));
+            if (sheet.Hidden) root.SetAttributeValue("hidden", true);
+            if (!sheet.TabColor.IsEmpty) root.SetAttributeValue("tabColor", ColorTranslator.ToHtml(sheet.TabColor));
             if (!string.IsNullOrEmpty(sheet.ThemeId)) root.SetAttributeValue("theme", sheet.ThemeId);
             foreach (var pair in sheet.RowHeights) root.Add(new XElement("row", new XAttribute("index", pair.Key), new XAttribute("height", pair.Value)));
             foreach (var pair in sheet.ColumnWidths) root.Add(new XElement("column", new XAttribute("index", pair.Key), new XAttribute("width", pair.Value)));

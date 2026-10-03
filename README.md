@@ -12,7 +12,14 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.6.0 — Formatting
+## Tính năng v0.7.0 — Giao diện DinkCel
+
+- Giao diện desktop gọn hơn với thanh lệnh ngắn, nút theo ngữ cảnh, thanh định dạng nhỏ khi chọn vùng bằng chuột, bảng Inspector bên phải và sáu theme Light, Dark, Midnight, Paper, Solar, Mint. Lưới và biểu đồ đổi màu theo theme.
+- `Ctrl+K` tìm lệnh, sheet, vùng có tên, Table, biểu đồ và hàm. `Ctrl+Shift+P` đi nhanh tới ô, sheet, vùng có tên, Table, biểu đồ hoặc ô chứa nội dung cần tìm. `Ctrl+Shift+I` mở/đóng Inspector; `Ctrl+Shift+M` bật/tắt chế độ tối giản. `Ctrl+P` vẫn dùng để in.
+- Màn hình bắt đầu có bảng tính mới, mở tệp và danh sách tệp gần đây. Formula Bar tô màu tên hàm và tham chiếu khi xem công thức. Thanh trạng thái hiển thị số ô, tổng, trung bình, nhỏ nhất, lớn nhất và thanh zoom.
+- Tab sheet có thể kéo đổi thứ tự, nhân bản, sao chép, ẩn/hiện và chọn màu. Trạng thái ẩn được lưu trong `.dinkcel`, `.xlsx`, `.xls`, `.ods`; màu tab được lưu trong `.dinkcel` và `.xlsx`.
+
+### Tính năng từ v0.6.0 — Formatting
 
 - **Font:** chọn họ font và cỡ chữ; in đậm, nghiêng, gạch chân, gạch ngang và màu chữ. Hộp chọn font cho phép đặt cỡ bất kỳ trong phạm vi hỗ trợ.
 - **Ô:** màu nền, viền từng cạnh với kiểu và màu, căn ngang/dọc, xuống dòng, thu chữ vừa ô, thụt lề và xoay chữ.

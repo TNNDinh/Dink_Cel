@@ -124,7 +124,11 @@ namespace DinkCel
                     if (!paths.ContainsKey(id)) continue;
                     string sheetPart = paths[id];
                     var document = ReadXml(zip, sheetPart);
-                    var sheet = new SheetSnapshot { Name = (string)sheetInfo.Attribute("name") ?? "Sheet" };
+                    var sheet = new SheetSnapshot { Name = (string)sheetInfo.Attribute("name") ?? "Sheet",
+                        Hidden = string.Equals((string)sheetInfo.Attribute("state"), "hidden", StringComparison.OrdinalIgnoreCase) };
+                    string tabRgb = (string)document.Descendants(S + "tabColor").Select(e => e.Attribute("rgb")).FirstOrDefault();
+                    if (!string.IsNullOrEmpty(tabRgb) && tabRgb.Length >= 6)
+                        sheet.TabColor = ColorTranslator.FromHtml("#" + tabRgb.Substring(tabRgb.Length - 6));
                     var columnStyles = new Dictionary<int, int>();
                     var pane = document.Descendants(S + "pane").FirstOrDefault();
                     if (pane != null)
@@ -330,7 +334,10 @@ namespace DinkCel
                         int number = i + 1;
                         string part = "xl/worksheets/sheet" + number + ".xml";
                         types.Add(new XElement(C + "Override", new XAttribute("PartName", "/" + part), new XAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml")));
-                        sheetsElement.Add(new XElement(S + "sheet", new XAttribute("name", book.Sheets[i].Name), new XAttribute("sheetId", number), new XAttribute(R + "id", "rId" + number)));
+                        var sheetEntry = new XElement(S + "sheet", new XAttribute("name", book.Sheets[i].Name),
+                            new XAttribute("sheetId", number), new XAttribute(R + "id", "rId" + number));
+                        if (book.Sheets[i].Hidden) sheetEntry.SetAttributeValue("state", "hidden");
+                        sheetsElement.Add(sheetEntry);
                         relationships.Add(new XElement(P + "Relationship", new XAttribute("Id", "rId" + number), new XAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"), new XAttribute("Target", "worksheets/sheet" + number + ".xml")));
                         var tableIds = new List<string>();
                         var sheetRels = new XElement(P + "Relationships");
@@ -407,6 +414,10 @@ namespace DinkCel
             IList<string> tableIds, string drawingRelation)
         {
             var root = new XElement(S + "worksheet", new XAttribute(XNamespace.Xmlns + "r", R));
+            if (!sheet.TabColor.IsEmpty)
+                root.Add(new XElement(S + "sheetPr", new XElement(S + "tabColor",
+                    new XAttribute("rgb", "FF" + sheet.TabColor.R.ToString("X2") +
+                        sheet.TabColor.G.ToString("X2") + sheet.TabColor.B.ToString("X2")))));
             if (sheet.FreezeRow > 0 || sheet.FreezeColumn > 0)
                 root.Add(new XElement(S + "sheetViews", new XElement(S + "sheetView", new XAttribute("workbookViewId", 0),
                     new XElement(S + "pane", new XAttribute("xSplit", sheet.FreezeColumn), new XAttribute("ySplit", sheet.FreezeRow),

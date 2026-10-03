@@ -70,7 +70,7 @@ namespace DinkCel
                 for (int i = 0; i < xls.NumberOfSheets; i++)
                 {
                     ISheet source = xls.GetSheetAt(i);
-                    var sheet = new SheetSnapshot { Name = source.SheetName };
+                    var sheet = new SheetSnapshot { Name = source.SheetName, Hidden = xls.IsSheetHidden(i) };
                     for (int c = 0; c < columns; c++)
                     {
                         int width = source.GetColumnWidth(c);
@@ -190,6 +190,7 @@ namespace DinkCel
                 foreach (SheetSnapshot sheet in source.Sheets)
                 {
                     ISheet target = xls.CreateSheet(sheet.Name);
+                    if (sheet.Hidden) xls.SetSheetHidden(xls.NumberOfSheets - 1, true);
                     foreach (var width in sheet.ColumnWidths)
                         target.SetColumnWidth(width.Key, Math.Min(255 * 256, (int)(Math.Max(20, width.Value) / 7.0 * 256)));
                     foreach (int column in sheet.HiddenColumns) target.SetColumnHidden(column, true);

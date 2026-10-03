@@ -77,6 +77,8 @@ namespace DinkCel
     internal sealed class SheetSnapshot
     {
         public string Name = "Sheet1";
+        public bool Hidden;
+        public Color TabColor = Color.Empty;
         public Color Background = Color.Empty;
         public string ThemeId;
         public readonly Dictionary<int, CellSnapshot> Cells = new Dictionary<int, CellSnapshot>();
@@ -98,6 +100,8 @@ namespace DinkCel
     internal sealed class SheetState
     {
         public string Name = "Sheet1";
+        public bool Hidden;
+        public Color TabColor = Color.Empty;
         public readonly List<Rectangle> Merges = new List<Rectangle>();
         public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
         public readonly List<TableDefinition> Tables = new List<TableDefinition>();
@@ -140,11 +144,11 @@ namespace DinkCel
     {
         private const int RowCount = 200;
         private const int ColumnCount = 26;
-        private static readonly Font HeaderFont = new Font("Arial", 9F);
+        private static readonly Font HeaderFont = new Font("Segoe UI", 9F);
 
         private readonly SmoothGrid grid = new SmoothGrid();
         private readonly Panel headerPanel = new Panel();
-        private readonly Label logo = new Label();
+        private readonly Label logo = new DinkLogo();
         private readonly Label subtitle = new Label();
         private readonly MenuStrip menu = new MenuStrip();
         private readonly ContextMenuStrip rowContext = new ContextMenuStrip();
@@ -250,7 +254,8 @@ namespace DinkCel
             {
                 if (!string.IsNullOrEmpty(startupPath))
                     OpenPath(startupPath);
-                grid.Focus();
+                else ShowWelcome();
+                if (!welcomePanel.Visible) grid.Focus();
             };
         }
 
@@ -262,42 +267,42 @@ namespace DinkCel
             layout.Padding = Padding.Empty;
             layout.ColumnCount = 1;
             layout.RowCount = 6;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             Controls.Add(layout);
 
             Panel header = headerPanel;
             header.Dock = DockStyle.Fill;
             header.BackColor = theme.Chrome;
-            logo.Text = "D";
+            logo.Text = "";
             logo.Font = new Font("Segoe UI", 17F, FontStyle.Bold);
             logo.ForeColor = Color.White;
             logo.BackColor = theme.Logo;
             logo.TextAlign = ContentAlignment.MiddleCenter;
-            logo.Bounds = new Rectangle(18, 14, 36, 36);
+            logo.Bounds = new Rectangle(12, 7, 32, 32);
             header.Controls.Add(logo);
-            documentTitle.Font = new Font("Segoe UI", 16F, FontStyle.Bold);
+            documentTitle.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
             documentTitle.ForeColor = theme.Text;
-            documentTitle.Location = new Point(68, 7);
-            documentTitle.Size = new Size(650, 31);
+            documentTitle.Location = new Point(56, 4);
+            documentTitle.Size = new Size(440, 23);
             header.Controls.Add(documentTitle);
             subtitle.Text = "DinkCel  •  Bảng tính trên máy";
             subtitle.Font = new Font("Segoe UI", 8.5F);
             subtitle.ForeColor = theme.Muted;
-            subtitle.Location = new Point(69, 37);
+            subtitle.Location = new Point(57, 25);
             subtitle.Size = new Size(400, 20);
             header.Controls.Add(subtitle);
             saveIndicator.TextAlign = ContentAlignment.MiddleRight;
             saveIndicator.ForeColor = theme.Muted;
-            saveIndicator.Bounds = new Rectangle(900, 20, 350, 25);
+            saveIndicator.Bounds = new Rectangle(850, 11, 125, 25);
             header.Controls.Add(saveIndicator);
             header.Resize += delegate
             {
-                saveIndicator.Left = header.ClientSize.Width - saveIndicator.Width - 18;
+                saveIndicator.Left = header.ClientSize.Width - saveIndicator.Width - 174;
                 documentTitle.Width = Math.Max(200, saveIndicator.Left - documentTitle.Left - 12);
             };
             layout.Controls.Add(header, 0, 0);
@@ -307,7 +312,7 @@ namespace DinkCel
             menu.BackColor = theme.Chrome;
             menu.ForeColor = theme.Text;
             menu.Font = new Font("Segoe UI", 10F);
-            menu.Padding = new Padding(60, 0, 0, 0);
+            menu.Padding = new Padding(12, 0, 0, 0);
             var fileMenu = new ToolStripMenuItem("Tệp");
             AddMenuItem(fileMenu, "Mới", Keys.Control | Keys.N, NewDocument);
             AddMenuItem(fileMenu, "Mở...", Keys.Control | Keys.O, OpenDocument);
@@ -347,6 +352,11 @@ namespace DinkCel
             menu.Items.Add(formatMenu);
             var viewMenu = new ToolStripMenuItem("Xem");
             AddMenuItem(viewMenu, "Đổi giao diện...", Keys.None, ChooseTheme);
+            AddMenuItem(viewMenu, "Tìm lệnh...", Keys.Control | Keys.K, ShowCommandPalette);
+            AddMenuItem(viewMenu, "Đi nhanh...", Keys.Control | Keys.Shift | Keys.P, ShowQuickNavigator);
+            AddMenuItem(viewMenu, "Bảng Inspector", Keys.Control | Keys.Shift | Keys.I, ToggleInspector);
+            AddMenuItem(viewMenu, "Chế độ tối giản", Keys.Control | Keys.Shift | Keys.M, ToggleMinimalMode);
+            AddMenuItem(viewMenu, "Màn hình bắt đầu", Keys.None, ShowWelcome);
             menu.Items.Add(viewMenu);
             AddSpreadsheetMenus();
             var helpMenu = new ToolStripMenuItem("Trợ giúp");
@@ -360,7 +370,7 @@ namespace DinkCel
             toolbar.BackColor = theme.Chrome;
             toolbar.ForeColor = theme.Text;
             toolbar.Font = new Font("Segoe UI", 10F);
-            toolbar.Padding = new Padding(14, 6, 8, 6);
+            toolbar.Padding = new Padding(10, 3, 8, 3);
             toolbar.RenderMode = ToolStripRenderMode.System;
             AddToolbarButton(toolbar, "Mở", "Mở bảng tính", OpenDocument);
             AddToolbarButton(toolbar, "Lưu", "Lưu bảng tính", delegate { SaveDocument(); });
@@ -419,6 +429,7 @@ namespace DinkCel
             themeSwatch.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
             toolbar.Items.Add(themeSwatch);
             AddToolbarButton(toolbar, "Giao diện", "Chọn màu toàn bộ giao diện", ChooseTheme);
+            ConfigureCompactCommands();
             layout.Controls.Add(toolbar, 0, 2);
 
             TableLayoutPanel formula = formulaPanel;
@@ -433,11 +444,11 @@ namespace DinkCel
             addressBox.ReadOnly = false;
             addressBox.TabStop = true;
             addressBox.BorderStyle = BorderStyle.FixedSingle;
-            addressBox.BackColor = theme.Sheet;
+            addressBox.BackColor = theme.Header;
             addressBox.ForeColor = theme.Text;
             addressBox.TextAlign = HorizontalAlignment.Center;
             addressBox.Dock = DockStyle.Fill;
-            addressBox.Font = new Font("Arial", 10F);
+            addressBox.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             var formulaTips = new ToolTip();
             formulaTips.SetToolTip(addressBox, "Nhập A1, A1:C5 hoặc tên vùng rồi nhấn Enter");
             addressBox.KeyDown += AddressBoxKeyDown;
@@ -450,15 +461,16 @@ namespace DinkCel
             fx.Dock = DockStyle.Fill;
             formula.Controls.Add(fx, 1, 0);
             contentBox.BorderStyle = BorderStyle.FixedSingle;
-            contentBox.Font = new Font("Arial", 10F);
+            contentBox.Font = new Font("Consolas", 10F);
             contentBox.ForeColor = theme.Text;
             contentBox.BackColor = theme.Sheet;
             contentBox.Dock = DockStyle.Fill;
             formulaTips.SetToolTip(contentBox, "Sửa nội dung hoặc công thức; Enter để lưu, Esc để hủy");
-            contentBox.TextChanged += delegate { if (!syncingContent) formulaBarChanged = true; };
+            contentBox.TextChanged += delegate { if (!syncingContent) formulaBarChanged = true; UpdateFormulaPreview(); };
             contentBox.KeyDown += FormulaBarKeyDown;
-            contentBox.Leave += delegate { CommitFormulaBar(); };
-            formula.Controls.Add(contentBox, 2, 0);
+            contentBox.Leave += delegate { CommitFormulaBar(); UpdateFormulaPreview(); };
+            contentBox.Enter += delegate { UpdateFormulaPreview(); };
+            BuildFormulaInput(formula);
             formula.Paint += delegate(object sender, PaintEventArgs e)
             {
                 using (var pen = new Pen(theme.Border))
@@ -470,7 +482,7 @@ namespace DinkCel
             grid.Margin = Padding.Empty;
             grid.BorderStyle = BorderStyle.None;
             grid.BackgroundColor = theme.Sheet;
-            grid.GridColor = theme.Border;
+            grid.GridColor = theme.GridLine;
             grid.AllowUserToAddRows = false;
             grid.AllowUserToDeleteRows = false;
             grid.AllowUserToOrderColumns = false;
@@ -481,7 +493,7 @@ namespace DinkCel
             grid.ColumnHeadersHeight = 28;
             grid.RowTemplate.Height = 27;
             grid.EnableHeadersVisualStyles = false;
-            grid.Font = new Font("Arial", 10F);
+            grid.Font = new Font("Segoe UI", 9F);
             grid.DefaultCellStyle.ForeColor = theme.Text;
             grid.DefaultCellStyle.BackColor = theme.Sheet;
             grid.DefaultCellStyle.SelectionForeColor = theme.Text;
@@ -531,7 +543,7 @@ namespace DinkCel
                     selectionAnchorColumn = grid.CurrentCell.ColumnIndex;
                 }
                 UpdateSelection();
-                grid.Invalidate();
+                ScheduleSelectionSummary();
             };
             grid.CellValueChanged += delegate(object sender, DataGridViewCellEventArgs e)
             {
@@ -579,7 +591,12 @@ namespace DinkCel
             columnContext.Items.Add("Xóa cột", null, delegate { DeleteColumn(); });
             columnContext.Items.Add("Ẩn cột", null, delegate { SetHidden(false, true); });
             columnContext.Items.Add("Hiện cột đã ẩn", null, delegate { SetHidden(false, false); });
-            layout.Controls.Add(grid, 0, 4);
+            var workspace = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+            workspace.Controls.Add(grid);
+            BuildInspector(workspace);
+            BuildFloatingActions(workspace);
+            BuildWelcome(workspace);
+            layout.Controls.Add(workspace, 0, 4);
 
             Panel footer = footerPanel;
             footer.Dock = DockStyle.Fill;
@@ -604,13 +621,14 @@ namespace DinkCel
             footer.Controls.Add(sheetTabs);
             status.ForeColor = theme.Muted;
             status.TextAlign = ContentAlignment.MiddleRight;
-            status.Bounds = new Rectangle(850, 6, 360, 30);
+            status.Bounds = new Rectangle(850, 3, 135, 28);
             footer.Controls.Add(status);
             footer.Resize += delegate
             {
-                status.Left = footer.ClientSize.Width - status.Width - 16;
+                status.Left = footer.ClientSize.Width - status.Width - 150;
             };
             layout.Controls.Add(footer, 0, 5);
+            BuildVisualChrome(header, footer);
             RefreshSheetTabs();
         }
 
@@ -815,6 +833,7 @@ namespace DinkCel
             sheetTab.ForeColor = theme.Accent;
             status.ForeColor = theme.Muted;
             ApplySheetBackground(theme.Sheet, false);
+            ApplyVisualTheme();
             headerPanel.Invalidate();
             formulaPanel.Invalidate();
             footerPanel.Invalidate();
@@ -843,12 +862,12 @@ namespace DinkCel
                 : dark ? Color.FromArgb(60, 80, 105)
                     : Color.FromArgb(211, 227, 244);
             grid.GridColor = color.ToArgb() == theme.Sheet.ToArgb()
-                ? theme.Border : dark ? Color.FromArgb(78, 92, 108)
+                ? theme.GridLine : dark ? Color.FromArgb(78, 92, 108)
                     : Color.FromArgb(198, 209, 221);
             grid.ColumnHeadersDefaultCellStyle.BackColor = theme.Header;
             grid.RowHeadersDefaultCellStyle.BackColor = theme.Header;
             formulaPanel.BackColor = color;
-            addressBox.BackColor = color;
+            addressBox.BackColor = theme.Header;
             addressBox.ForeColor = foreground;
             contentBox.BackColor = color;
             contentBox.ForeColor = foreground;
@@ -1015,6 +1034,8 @@ namespace DinkCel
             italicButton.Checked = (font.Style & FontStyle.Italic) != 0;
             underlineButton.Checked = (font.Style & FontStyle.Underline) != 0;
             syncingToolbar = false;
+            UpdateContextCommands();
+            UpdateInspectorProperties();
         }
 
         private void MarkDirty()
@@ -1029,6 +1050,8 @@ namespace DinkCel
         {
             var state = new SheetState();
             state.Name = sheets.Count > activeSheetIndex ? sheets[activeSheetIndex].Name : "Sheet1";
+            if (sheets.Count > activeSheetIndex)
+            { state.Hidden = sheets[activeSheetIndex].Hidden; state.TabColor = sheets[activeSheetIndex].TabColor; }
             state.Merges.AddRange(merges);
             state.Rules.AddRange(conditionalRules);
             state.Tables.AddRange(tables);
@@ -1044,7 +1067,7 @@ namespace DinkCel
             state.CsvColumns = csvDocument == null ? 0 : csvDocument.DataColumns;
             for (int row = 0; row < RowCount; row++)
             {
-                state.RowHeights[row] = grid.Rows[row].Height;
+                state.RowHeights[row] = Math.Max(1, (int)Math.Round(grid.Rows[row].Height * 100.0 / zoomPercent));
                 for (int column = 0; column < ColumnCount; column++)
                 {
                     DataGridViewCell cell = grid[column, row];
@@ -1061,7 +1084,7 @@ namespace DinkCel
                 }
             }
             for (int column = 0; column < ColumnCount; column++)
-                state.ColumnWidths[column] = grid.Columns[column].Width;
+                state.ColumnWidths[column] = Math.Max(1, (int)Math.Round(grid.Columns[column].Width * 100.0 / zoomPercent));
             Array.Copy(manualHiddenRows, state.HiddenRows, RowCount);
             Array.Copy(manualHiddenColumns, state.HiddenColumns, ColumnCount);
             return state;
@@ -1133,9 +1156,9 @@ namespace DinkCel
                     cell.Tag = CellExtras.Copy(item.Value.Extras);
                 }
                 for (int row = 0; row < RowCount; row++)
-                    grid.Rows[row].Height = state.RowHeights[row];
+                    grid.Rows[row].Height = Math.Max(5, (int)Math.Round(state.RowHeights[row] * zoomPercent / 100.0));
                 for (int column = 0; column < ColumnCount; column++)
-                    grid.Columns[column].Width = state.ColumnWidths[column];
+                    grid.Columns[column].Width = Math.Max(10, (int)Math.Round(state.ColumnWidths[column] * zoomPercent / 100.0));
                 RestoreHidden(state);
                 merges.Clear();
                 merges.AddRange(state.Merges);
@@ -1265,6 +1288,12 @@ namespace DinkCel
             if (!ConfirmDiscardChanges())
                 return;
             ClearGrid();
+            loading = true;
+            for (int row = 0; row < RowCount; row++)
+                grid.Rows[row].Height = Math.Max(5, (int)Math.Round(27 * zoomPercent / 100.0));
+            for (int column = 0; column < ColumnCount; column++)
+                grid.Columns[column].Width = Math.Max(10, (int)Math.Round(120 * zoomPercent / 100.0));
+            loading = false;
             sheets.Clear();
             sheets.Add(new SheetState { Name = "Sheet1" });
             activeSheetIndex = 0;
@@ -1286,6 +1315,7 @@ namespace DinkCel
             Recalculate();
             UpdateTitle();
             ResetHistory();
+            HideWelcome();
         }
 
         private void OpenDocument()
@@ -1333,9 +1363,10 @@ namespace DinkCel
                     }
                     if (sheets.Count == 0)
                         sheets.Add(new SheetState { Name = "Sheet1" });
-                    activeSheetIndex = 0;
+                    activeSheetIndex = sheets.FindIndex(s => !s.Hidden);
+                    if (activeSheetIndex < 0) { sheets[0].Hidden = false; activeSheetIndex = 0; }
                     csvDocument = csv;
-                    RestoreSheet(sheets[0]);
+                    RestoreSheet(sheets[activeSheetIndex]);
                     RefreshSheetTabs();
                     currentPath = path;
                     dirty = false;
@@ -1345,6 +1376,8 @@ namespace DinkCel
                     UpdateTitle();
                     status.Text = "Đã mở " + Path.GetFileName(path);
                     ResetHistory();
+                    RecordRecentFile(path);
+                    HideWelcome();
                 }
                 catch (Exception error)
                 {
@@ -1392,6 +1425,9 @@ namespace DinkCel
                 {
                     var sheet = new SheetSnapshot();
                     sheet.Name = (string)sheetElement.Attribute("name") ?? "Sheet" + (workbook.Sheets.Count + 1);
+                    sheet.Hidden = (bool?)sheetElement.Attribute("hidden") ?? false;
+                    string tabColor = (string)sheetElement.Attribute("tabColor");
+                    if (!string.IsNullOrEmpty(tabColor)) sheet.TabColor = ColorTranslator.FromHtml(tabColor);
                     sheet.ThemeId = (string)sheetElement.Attribute("theme");
                     XAttribute sheetBackground = sheetElement.Attribute("background");
                     if (sheetBackground != null)
@@ -1520,13 +1556,15 @@ namespace DinkCel
 
         private bool WriteDocument(string path)
         {
-            return IsCsvPath(path) ? WriteCsv(path) :
+            bool saved = IsCsvPath(path) ? WriteCsv(path) :
                 string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) ?
                 WriteXlsx(path) :
                 string.Equals(Path.GetExtension(path), ".xls", StringComparison.OrdinalIgnoreCase) ?
                 WriteXls(path) :
                 string.Equals(Path.GetExtension(path), ".ods", StringComparison.OrdinalIgnoreCase) ?
                 WriteOds(path) : WriteWorkbook(path);
+            if (saved) RecordRecentFile(path);
+            return saved;
         }
 
         private bool WriteCsv(string path)
@@ -2224,6 +2262,10 @@ namespace DinkCel
 
         protected override bool ProcessCmdKey(ref Message message, Keys keyData)
         {
+            if (keyData == (Keys.Control | Keys.K)) { ShowCommandPalette(); return true; }
+            if (keyData == (Keys.Control | Keys.Shift | Keys.P)) { ShowQuickNavigator(); return true; }
+            if (keyData == (Keys.Control | Keys.Shift | Keys.I)) { ToggleInspector(); return true; }
+            if (keyData == (Keys.Control | Keys.Shift | Keys.M)) { ToggleMinimalMode(); return true; }
             if (addressBox.Focused || contentBox.Focused)
                 return base.ProcessCmdKey(ref message, keyData);
             if (HandleEditingShortcut(keyData)) return true;
