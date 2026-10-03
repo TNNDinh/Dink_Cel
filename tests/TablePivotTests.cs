@@ -185,6 +185,8 @@ namespace DinkCel
                 grid.CurrentCell = grid[0, 199];
                 Call(form, "InsertRow");
                 Check(grid.RowCount > 200, "insert at initial grid edge");
+                form.GetType().GetField("dirty", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .SetValue(form, false);
                 form.Close();
             }
         }
