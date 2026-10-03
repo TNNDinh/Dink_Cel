@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
+using System.Xml.Linq;
 
 namespace DinkCel
 {
@@ -20,6 +21,21 @@ namespace DinkCel
 
         private static void Run()
         {
+            XDocument themeStyles = XDocument.Parse("<styleSheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'>" +
+                "<fonts><font><sz val='11'/><name val='Aptos'/><color theme='4' tint='0.5'/></font></fonts>" +
+                "<fills><fill><patternFill patternType='none'/></fill><fill><patternFill patternType='gray125'/></fill>" +
+                "<fill><patternFill patternType='solid'><fgColor theme='5'/></patternFill></fill></fills>" +
+                "<borders><border/></borders><cellXfs><xf fontId='0' fillId='2' borderId='0'>" +
+                "<alignment horizontal='center' vertical='bottom'/></xf></cellXfs></styleSheet>");
+            XDocument theme = XDocument.Parse("<a:theme xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'>" +
+                "<a:themeElements><a:clrScheme><a:accent1><a:srgbClr val='112233'/></a:accent1>" +
+                "<a:accent2><a:srgbClr val='445566'/></a:accent2></a:clrScheme></a:themeElements></a:theme>");
+            var themed = XlsxStyles.Read(themeStyles, theme)[0];
+            Equal("Aptos", themed.FontName);
+            Equal(true, themed.HasFont);
+            Equal(Color.FromArgb(136, 144, 153).ToArgb(), themed.ForeColor.ToArgb());
+            Equal(Color.FromArgb(68, 85, 102).ToArgb(), themed.BackColor.ToArgb());
+            Equal(DataGridViewContentAlignment.BottomCenter, themed.Alignment);
             string path = Path.Combine(Path.GetTempPath(), "DinkCel_xlsx_" + Guid.NewGuid().ToString("N") + ".xlsx");
             try
             {
@@ -27,9 +43,12 @@ namespace DinkCel
                 book.Sheets[0].Name = "Sales";
                 book.Sheets[0].Cells[0] = new CellSnapshot { Text = "Revenue" };
                 book.Sheets[0].Cells[26] = new CellSnapshot { Text = "1234.5", NumberFormat = "#,##0.00",
-                    HasFont = true, FontStyle = FontStyle.Bold, FontSize = 14F,
+                    HasFont = true, FontName = "Consolas", FontStyle = FontStyle.Bold | FontStyle.Strikeout, FontSize = 14F,
                     ForeColor = Color.DarkBlue, BackColor = Color.LightYellow,
-                    Alignment = DataGridViewContentAlignment.MiddleRight };
+                    Alignment = DataGridViewContentAlignment.TopRight,
+                    Extras = new CellExtras { Wrap = true, Shrink = true, Indent = 2, Rotation = -30,
+                        Left = new BorderEdge { Style = "thin", Color = Color.Red },
+                        Bottom = new BorderEdge { Style = "double", Color = Color.Blue } } };
                 book.Sheets[0].Cells[27] = new CellSnapshot { Text = "=A2*2" };
                 book.Sheets[0].Merges.Add(new Rectangle(0, 0, 2, 1));
                 book.Sheets[0].FreezeRow = 1;
@@ -38,6 +57,8 @@ namespace DinkCel
                 book.Sheets[0].Rules.Add(new ConditionalRule { Range = new Rectangle(0, 1, 1, 1), Threshold = 1000, Color = Color.LightGreen });
                 book.Sheets[0].ColumnWidths[0] = 180;
                 book.Sheets[0].RowHeights[0] = 35;
+                book.Sheets[0].HiddenRows.Add(4);
+                book.Sheets[0].HiddenColumns.Add(3);
                 var second = new SheetSnapshot { Name = "Ghi chú" };
                 second.Cells[0] = new CellSnapshot { Text = "Xin chào" };
                 second.Cells[1] = new CellSnapshot { Text = "Value" };
@@ -64,10 +85,20 @@ namespace DinkCel
                 Equal("=A2*2", read.Sheets[0].Cells[27].Text);
                 Equal("#,##0.00", read.Sheets[0].Cells[26].NumberFormat);
                 Equal(true, read.Sheets[0].Cells[26].HasFont);
-                Equal(FontStyle.Bold, read.Sheets[0].Cells[26].FontStyle);
+                Equal(FontStyle.Bold | FontStyle.Strikeout, read.Sheets[0].Cells[26].FontStyle);
+                Equal("Consolas", read.Sheets[0].Cells[26].FontName);
+                Equal(true, read.Sheets[0].Cells[26].Extras.Wrap);
+                Equal(true, read.Sheets[0].Cells[26].Extras.Shrink);
+                Equal(2, read.Sheets[0].Cells[26].Extras.Indent);
+                Equal(-30, read.Sheets[0].Cells[26].Extras.Rotation);
+                Equal("thin", read.Sheets[0].Cells[26].Extras.Left.Style);
+                Equal(Color.Red.ToArgb(), read.Sheets[0].Cells[26].Extras.Left.Color.ToArgb());
+                Equal("double", read.Sheets[0].Cells[26].Extras.Bottom.Style);
+                Equal(true, read.Sheets[0].HiddenRows.Contains(4));
+                Equal(true, read.Sheets[0].HiddenColumns.Contains(3));
                 Equal(Color.LightYellow.ToArgb(), read.Sheets[0].Cells[26].BackColor.ToArgb());
                 Equal(Color.DarkBlue.ToArgb(), read.Sheets[0].Cells[26].ForeColor.ToArgb());
-                Equal(DataGridViewContentAlignment.MiddleRight, read.Sheets[0].Cells[26].Alignment);
+                Equal(DataGridViewContentAlignment.TopRight, read.Sheets[0].Cells[26].Alignment);
                 Equal(1, read.Sheets[0].Merges.Count);
                 Equal(1, read.Sheets[0].FreezeRow);
                 Equal(0, read.Sheets[0].FilterColumn);

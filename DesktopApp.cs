@@ -44,6 +44,7 @@ namespace DinkCel
     internal sealed class CellSnapshot
     {
         public string Text = "";
+        public string FontName = "Arial";
         public FontStyle FontStyle = FontStyle.Regular;
         public float FontSize = 10F;
         public Color ForeColor = Color.Empty;
@@ -51,6 +52,7 @@ namespace DinkCel
         public DataGridViewContentAlignment Alignment = DataGridViewContentAlignment.NotSet;
         public bool HasFont;
         public string NumberFormat = "";
+        public CellExtras Extras;
     }
 
     internal sealed class ConditionalRule
@@ -80,6 +82,8 @@ namespace DinkCel
         public readonly Dictionary<int, CellSnapshot> Cells = new Dictionary<int, CellSnapshot>();
         public readonly Dictionary<int, int> RowHeights = new Dictionary<int, int>();
         public readonly Dictionary<int, int> ColumnWidths = new Dictionary<int, int>();
+        public readonly HashSet<int> HiddenRows = new HashSet<int>();
+        public readonly HashSet<int> HiddenColumns = new HashSet<int>();
         public readonly List<Rectangle> Merges = new List<Rectangle>();
         public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
         public readonly List<TableDefinition> Tables = new List<TableDefinition>();
@@ -107,6 +111,8 @@ namespace DinkCel
             new Dictionary<int, CellState>();
         public readonly int[] RowHeights = new int[200];
         public readonly int[] ColumnWidths = new int[26];
+        public readonly bool[] HiddenRows = new bool[200];
+        public readonly bool[] HiddenColumns = new bool[26];
         public Color Background;
         public string ThemeId;
         public int CsvRows;
@@ -127,6 +133,7 @@ namespace DinkCel
     {
         public object Value;
         public DataGridViewCellStyle Style;
+        public CellExtras Extras;
     }
 
     internal sealed partial class SpreadsheetForm : Form
@@ -336,6 +343,7 @@ namespace DinkCel
                 delegate { ToggleFontStyle(FontStyle.Italic); });
             AddMenuItem(formatMenu, "Gạch chân", Keys.Control | Keys.U,
                 delegate { ToggleFontStyle(FontStyle.Underline); });
+            AddFormattingMenus(formatMenu);
             menu.Items.Add(formatMenu);
             var viewMenu = new ToolStripMenuItem("Xem");
             AddMenuItem(viewMenu, "Đổi giao diện...", Keys.None, ChooseTheme);
@@ -359,8 +367,10 @@ namespace DinkCel
             toolbar.Items.Add(new ToolStripSeparator());
             AddToolbarButton(toolbar, "Sao chép", "Sao chép ô đã chọn", CopySelected);
             AddToolbarButton(toolbar, "Dán", "Dán từ bộ nhớ tạm", PasteSelected);
+            AddToolbarButton(toolbar, "Chổi", "Sao chép định dạng rồi nhấp ô đích", StartFormatPainter);
             toolbar.Items.Add(new ToolStripSeparator());
             toolbar.Items.Add(new ToolStripLabel("Cỡ chữ"));
+            AddFontPicker();
             sizeCombo.AutoSize = false;
             sizeCombo.Width = 55;
             sizeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -491,6 +501,7 @@ namespace DinkCel
                     { grid.CurrentCell = grid[merge.X, merge.Y]; break; }
             };
             grid.CellFormatting += GridCellFormatting;
+            grid.CellPainting += PaintCellExtras;
             grid.EditingControlShowing += GridEditingControlShowing;
             grid.CellBeginEdit += delegate(object sender, DataGridViewCellCancelEventArgs e)
             {
@@ -501,6 +512,11 @@ namespace DinkCel
             };
             grid.CellClick += delegate(object sender, DataGridViewCellEventArgs e)
             {
+                if (painterSource != null && e.RowIndex >= 0 && e.ColumnIndex >= 0)
+                {
+                    ApplyFormatPainter();
+                    return;
+                }
                 if (e.RowIndex >= 0 && e.ColumnIndex >= 0 &&
                     ValidationFor(e.RowIndex, e.ColumnIndex) != null)
                     ShowValidationDropdown(e.RowIndex, e.ColumnIndex);
@@ -556,9 +572,13 @@ namespace DinkCel
             rowContext.Items.Add("Chèn hàng phía trên", null,
                 delegate { InsertRow(); });
             rowContext.Items.Add("Xóa hàng", null, delegate { DeleteRow(); });
+            rowContext.Items.Add("Ẩn hàng", null, delegate { SetHidden(true, true); });
+            rowContext.Items.Add("Hiện hàng đã ẩn", null, delegate { SetHidden(true, false); });
             columnContext.Items.Add("Chèn cột bên trái", null,
                 delegate { InsertColumn(); });
             columnContext.Items.Add("Xóa cột", null, delegate { DeleteColumn(); });
+            columnContext.Items.Add("Ẩn cột", null, delegate { SetHidden(false, true); });
+            columnContext.Items.Add("Hiện cột đã ẩn", null, delegate { SetHidden(false, false); });
             layout.Controls.Add(grid, 0, 4);
 
             Panel footer = footerPanel;
@@ -683,7 +703,7 @@ namespace DinkCel
             if (!string.IsNullOrEmpty(format) &&
                 double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out numeric))
             {
-                try { e.Value = numeric.ToString(format, CultureInfo.CurrentCulture); e.FormattingApplied = true; }
+                try { e.Value = FormatNumeric(numeric, format); e.FormattingApplied = true; }
                 catch (FormatException) { }
             }
             foreach (ConditionalRule rule in conditionalRules)
@@ -990,6 +1010,7 @@ namespace DinkCel
             Font font = grid.CurrentCell.InheritedStyle.Font ?? grid.Font;
             syncingToolbar = true;
             sizeCombo.Text = font.Size.ToString("0", CultureInfo.InvariantCulture);
+            fontCombo.Text = font.Name;
             boldButton.Checked = (font.Style & FontStyle.Bold) != 0;
             italicButton.Checked = (font.Style & FontStyle.Italic) != 0;
             underlineButton.Checked = (font.Style & FontStyle.Underline) != 0;
@@ -1028,18 +1049,21 @@ namespace DinkCel
                 {
                     DataGridViewCell cell = grid[column, row];
                     DataGridViewCellStyle style = cell.HasStyle ? cell.Style : null;
-                    if (cell.Value == null && !HasMeaningfulStyle(style))
+                    if (cell.Value == null && !HasMeaningfulStyle(style) && cell.Tag == null)
                         continue;
                     state.Cells[row * ColumnCount + column] = new CellState
                     {
                         Value = cell.Value,
                         Style = HasMeaningfulStyle(style) ?
-                            new DataGridViewCellStyle(style) : null
+                            new DataGridViewCellStyle(style) : null,
+                        Extras = CellExtras.Copy(cell.Tag as CellExtras)
                     };
                 }
             }
             for (int column = 0; column < ColumnCount; column++)
                 state.ColumnWidths[column] = grid.Columns[column].Width;
+            Array.Copy(manualHiddenRows, state.HiddenRows, RowCount);
+            Array.Copy(manualHiddenColumns, state.HiddenColumns, ColumnCount);
             return state;
         }
 
@@ -1092,10 +1116,11 @@ namespace DinkCel
                 foreach (DataGridViewRow row in grid.Rows)
                     foreach (DataGridViewCell cell in row.Cells)
                     {
-                        if (cell.Value != null || cell.HasStyle)
+                        if (cell.Value != null || cell.HasStyle || cell.Tag != null)
                         {
                             cell.Value = null;
                             cell.Style = new DataGridViewCellStyle();
+                            cell.Tag = null;
                         }
                     }
                 foreach (KeyValuePair<int, CellState> item in state.Cells)
@@ -1105,11 +1130,13 @@ namespace DinkCel
                     cell.Value = item.Value.Value;
                     if (item.Value.Style != null)
                         cell.Style = new DataGridViewCellStyle(item.Value.Style);
+                    cell.Tag = CellExtras.Copy(item.Value.Extras);
                 }
                 for (int row = 0; row < RowCount; row++)
                     grid.Rows[row].Height = state.RowHeights[row];
                 for (int column = 0; column < ColumnCount; column++)
                     grid.Columns[column].Width = state.ColumnWidths[column];
+                RestoreHidden(state);
                 merges.Clear();
                 merges.AddRange(state.Merges);
                 UpdateMergedReadOnly();
@@ -1210,15 +1237,20 @@ namespace DinkCel
             grid.SuspendLayout();
             foreach (DataGridViewRow row in grid.Rows)
             {
+                row.Visible = true;
                 foreach (DataGridViewCell cell in row.Cells)
                 {
-                    if (cell.Value != null || cell.HasStyle)
+                    if (cell.Value != null || cell.HasStyle || cell.Tag != null)
                     {
                         cell.Value = null;
                         cell.Style = new DataGridViewCellStyle();
+                        cell.Tag = null;
                     }
                 }
             }
+            foreach (DataGridViewColumn column in grid.Columns) column.Visible = true;
+            Array.Clear(manualHiddenRows, 0, RowCount);
+            Array.Clear(manualHiddenColumns, 0, ColumnCount);
             grid.ResumeLayout();
             loading = false;
             grid.ClearSelection();
@@ -1381,6 +1413,10 @@ namespace DinkCel
                         sheet.RowHeights[(int)dimension.Attribute("index")] = (int)dimension.Attribute("height");
                     foreach (XElement dimension in sheetElement.Elements("column"))
                         sheet.ColumnWidths[(int)dimension.Attribute("index")] = (int)dimension.Attribute("width");
+                    foreach (XElement dimension in sheetElement.Elements("hiddenRow"))
+                        sheet.HiddenRows.Add((int)dimension.Attribute("index"));
+                    foreach (XElement dimension in sheetElement.Elements("hiddenColumn"))
+                        sheet.HiddenColumns.Add((int)dimension.Attribute("index"));
                     ReadCells(sheetElement.Elements("cell"), sheet.Cells);
                     workbook.Sheets.Add(sheet);
                 }
@@ -1433,6 +1469,8 @@ namespace DinkCel
                     snapshot.Alignment = (DataGridViewContentAlignment)Enum.Parse(
                         typeof(DataGridViewContentAlignment), align.Value);
                 snapshot.NumberFormat = (string)element.Attribute("numberFormat") ?? "";
+                snapshot.FontName = (string)element.Attribute("fontName") ?? "Arial";
+                snapshot.Extras = CellExtras.ReadXml(element);
                 cells[row * ColumnCount + column] = snapshot;
             }
         }
@@ -1857,6 +1895,7 @@ namespace DinkCel
             target.Value = source.Value;
             target.Style = source.HasStyle ? new DataGridViewCellStyle(source.Style)
                 : new DataGridViewCellStyle();
+            target.Tag = CellExtras.Copy(source.Tag as CellExtras);
         }
 
         private void ClearCell(int column, int row)
@@ -1864,6 +1903,7 @@ namespace DinkCel
             DataGridViewCell cell = grid[column, row];
             cell.Value = null;
             cell.Style = new DataGridViewCellStyle();
+            cell.Tag = null;
         }
 
         private void CopyRow(int source, int target)
@@ -1893,7 +1933,8 @@ namespace DinkCel
             return new CellState
             {
                 Value = cell.Value,
-                Style = cell.HasStyle ? new DataGridViewCellStyle(cell.Style) : null
+                Style = cell.HasStyle ? new DataGridViewCellStyle(cell.Style) : null,
+                Extras = CellExtras.Copy(cell.Tag as CellExtras)
             };
         }
 
@@ -1903,6 +1944,7 @@ namespace DinkCel
             cell.Value = saved.Value;
             cell.Style = saved.Style == null ? new DataGridViewCellStyle() :
                 new DataGridViewCellStyle(saved.Style);
+            cell.Tag = CellExtras.Copy(saved.Extras);
         }
 
         private void MoveHeader(bool row, int source, int target)
@@ -2131,6 +2173,7 @@ namespace DinkCel
             DataGridViewCellStyle sourceStyle = source.HasStyle
                 ? new DataGridViewCellStyle(source.Style)
                 : new DataGridViewCellStyle();
+            CellExtras sourceExtras = CellExtras.Copy(source.Tag as CellExtras);
             loading = true;
             grid.SuspendLayout();
             try
@@ -2148,6 +2191,7 @@ namespace DinkCel
                             row - sourceRow, column - sourceColumn,
                             RowCount, ColumnCount);
                         cell.Style = new DataGridViewCellStyle(sourceStyle);
+                        cell.Tag = CellExtras.Copy(sourceExtras);
                     }
                 }
             }

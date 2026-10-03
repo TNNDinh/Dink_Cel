@@ -12,7 +12,7 @@ namespace DinkCel
         private static object Field(object target, string name)
         { return target.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(target); }
         private static object Call(object target, string name, params object[] args)
-        { return target.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance).Invoke(target, args); }
+        { return target.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static).Invoke(target, args); }
         private static void Equal(object expected, object actual)
         { if (!object.Equals(expected, actual)) throw new Exception("Expected " + expected + ", got " + actual); }
         private static void Check(bool condition, string message)
@@ -233,6 +233,93 @@ namespace DinkCel
                 Call(form, "SwitchSheet", 1);
                 grid[1, 0].Value = "=Sheet1!C1";
                 Equal("25", grid[1, 0].FormattedValue);
+
+                Call(form, "SwitchSheet", 0);
+                Call(form, "SelectRectangle", new Rectangle(0, 0, 1, 1), 0, 0, false);
+                Call(form, "ApplyFontFamily", "Consolas");
+                Call(form, "ToggleFontStyle", FontStyle.Strikeout);
+                Call(form, "SetVerticalAlignment", 0);
+                Call(form, "ToggleWrap");
+                Call(form, "SetBorders", "Tất cả");
+                Call(form, "StartFormatPainter");
+                Call(form, "SelectRectangle", new Rectangle(4, 0, 1, 1), 4, 0, false);
+                Call(form, "ApplyFormatPainter");
+                Equal("Consolas", grid[4, 0].Style.Font.Name);
+                Equal("thin", ((CellExtras)grid[4, 0].Tag).Left.Style);
+                grid[4, 0].Value = "1234.5";
+                Call(form, "ApplyNumberFormat", "Percentage");
+                Equal("123450.00%", grid[4, 0].FormattedValue);
+                Call(form, "ClearFormats");
+                Equal(null, grid[4, 0].Tag);
+                Equal("1234.5", grid[4, 0].Value);
+                Call(form, "ClearAll");
+                Equal(null, grid[4, 0].Value);
+                Call(form, "SelectRectangle", new Rectangle(0, 0, 1, 1), 0, 0, false);
+                Call(form, "SetHidden", true, true);
+                Check(!grid.Rows[0].Visible, "Row should hide immediately");
+                Call(form, "SelectRectangle", new Rectangle(1, 1, 1, 1), 1, 1, false);
+                Call(form, "SetHidden", false, true);
+                Check(!grid.Columns[1].Visible, "Column should hide immediately");
+                string formattingPath = Path.Combine(Path.GetTempPath(),
+                    "DinkCel_format_" + Guid.NewGuid().ToString("N") + ".dinkcel");
+                try
+                {
+                    Equal(true, Call(form, "WriteWorkbook", formattingPath));
+                    Check(File.ReadAllText(formattingPath).Contains("hiddenRow"), "Hidden row must be serialized");
+                    using (var reopened = new SpreadsheetForm(formattingPath))
+                    {
+                        reopened.Show(); Application.DoEvents();
+                        var savedGrid = (DataGridView)Field(reopened, "grid");
+                        Check(!savedGrid.Rows[0].Visible, "Hidden row should survive .dinkcel reload");
+                        Check(!savedGrid.Columns[1].Visible, "Hidden column should survive .dinkcel reload");
+                        Equal("Consolas", savedGrid[0, 0].Style.Font.Name);
+                        Equal(true, ((CellExtras)savedGrid[0, 0].Tag).Wrap);
+                        Equal("thin", ((CellExtras)savedGrid[0, 0].Tag).Left.Style);
+                    }
+                }
+                finally { if (File.Exists(formattingPath)) File.Delete(formattingPath); }
+
+                var htmlData = new DataObject();
+                htmlData.SetData(DataFormats.Html, "<html><head><style>.xl65{font-family:Consolas;font-weight:bold;" +
+                    "color:#112233;background-color:#DDEEFF;text-align:right;border-left:1px solid #FF0000;" +
+                    "mso-number-format:0.00%}</style></head><body><table><tr>" +
+                    "<td class=xl65>0.25</td><td style='font-style:italic'>Note</td>" +
+                    "</tr></table></body></html>");
+                htmlData.SetData(DataFormats.UnicodeText, "0.25\tNote");
+                Clipboard.SetDataObject(htmlData, true);
+                Call(form, "SelectRectangle", new Rectangle(7, 1, 1, 1), 7, 1, false);
+                Call(form, "PasteSelected");
+                Equal("0.25", grid[7, 1].Value);
+                Equal("25.00%", grid[7, 1].FormattedValue);
+                Equal("Consolas", grid[7, 1].Style.Font.Name);
+                Equal(Color.FromArgb(221, 238, 255).ToArgb(), grid[7, 1].Style.BackColor.ToArgb());
+                Equal("thin", ((CellExtras)grid[7, 1].Tag).Left.Style);
+                Equal("Note", grid[8, 1].Value);
+                Equal(true, (grid[8, 1].Style.Font.Style & FontStyle.Italic) != 0);
+                Equal("1 1/4", Call(form, "FormatNumeric", 1.25, "# ?/?"));
+                Equal("12.50%", Call(form, "FormatNumeric", 0.125, "0.00%"));
+                Equal("12.5", Call(form, "FormatNumeric", 12.5, "General"));
+                Equal("#,##0.00", Call(form, "NormalizeNumberFormat", "N2"));
+                Equal("0.0%", Call(form, "NormalizeNumberFormat", "P1"));
+                Check(Convert.ToString(Call(form, "FormatNumeric", 1234.5, "#,##0.00 ₫")).Contains("₫"),
+                    "Currency should display its symbol");
+                Check(Convert.ToString(Call(form, "FormatNumeric", -12.5, "#,##0.00;(#,##0.00);–")).Contains("("),
+                    "Accounting should mark negative values");
+                Equal("12:00:00", Call(form, "FormatNumeric", 0.5, "HH:mm:ss"));
+                Check(Convert.ToString(Call(form, "FormatNumeric", 1234.5, "0.00E+00")).Contains("E+"),
+                    "Scientific should use an exponent");
+                Equal(new DateTime(2026, 10, 3).ToString("dd/MM/yyyy"),
+                    Call(form, "FormatNumeric", new DateTime(2026, 10, 3).ToOADate(), "dd/MM/yyyy"));
+                grid[9, 1].Value = "Long text for automatic column and row sizing";
+                Call(form, "SelectRectangle", new Rectangle(9, 1, 1, 1), 9, 1, false);
+                grid.Columns[9].Width = 35;
+                Call(form, "AutoFitColumn");
+                Check(grid.Columns[9].Width > 35, "AutoFit should widen the selected column");
+                grid.Columns[9].Width = 50;
+                grid[9, 1].Style.WrapMode = DataGridViewTriState.True;
+                Call(form, "AutoFitRow");
+                Check(grid.Rows[1].Height > 27, "AutoFit should grow a wrapped row");
+                Console.WriteLine("v0.6 formatting: UI, clipboard HTML, .dinkcel and number formats passed.");
 
             }
             Console.WriteLine("v0.4 UI: navigation, ranges, formula bar, fill, clipboard, undo passed.");

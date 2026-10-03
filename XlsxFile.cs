@@ -112,7 +112,9 @@ namespace DinkCel
                 if (zip.GetEntry("xl/styles.xml") != null)
                 {
                     XDocument styleDocument = ReadXml(zip, "xl/styles.xml");
-                    styles = XlsxStyles.Read(styleDocument);
+                    XDocument themeDocument = zip.GetEntry("xl/theme/theme1.xml") == null ? null :
+                        ReadXml(zip, "xl/theme/theme1.xml");
+                    styles = XlsxStyles.Read(styleDocument, themeDocument);
                     differentialColors = XlsxStyles.ReadDifferentialColors(styleDocument);
                 }
                 var result = new WorkbookSnapshot(); result.Sheets.Clear();
@@ -123,6 +125,7 @@ namespace DinkCel
                     string sheetPart = paths[id];
                     var document = ReadXml(zip, sheetPart);
                     var sheet = new SheetSnapshot { Name = (string)sheetInfo.Attribute("name") ?? "Sheet" };
+                    var columnStyles = new Dictionary<int, int>();
                     var pane = document.Descendants(S + "pane").FirstOrDefault();
                     if (pane != null)
                     {
@@ -133,13 +136,20 @@ namespace DinkCel
                     {
                         int from = (int?)col.Attribute("min") ?? 0, to = (int?)col.Attribute("max") ?? 0;
                         double width = (double?)col.Attribute("width") ?? 0;
-                        for (int c = from; c <= to && c <= columns; c++) if (c > 0) sheet.ColumnWidths[c - 1] = Math.Max(20, (int)(width * 7 + 5));
+                        for (int c = from; c <= to && c <= columns; c++) if (c > 0)
+                        {
+                            if (width > 0) sheet.ColumnWidths[c - 1] = Math.Max(20, (int)(width * 7 + 5));
+                            if ((bool?)col.Attribute("hidden") == true) sheet.HiddenColumns.Add(c - 1);
+                            if (col.Attribute("style") != null) columnStyles[c - 1] = (int)col.Attribute("style");
+                        }
                     }
                     foreach (var row in document.Descendants(S + "sheetData").Elements(S + "row"))
                     {
                         int r = ((int?)row.Attribute("r") ?? 0) - 1;
                         double height = (double?)row.Attribute("ht") ?? 0;
                         if (r >= 0 && r < rows && height > 0) sheet.RowHeights[r] = Math.Max(2, (int)(height * 96 / 72));
+                        if (r >= 0 && r < rows && (bool?)row.Attribute("hidden") == true)
+                            sheet.HiddenRows.Add(r);
                         foreach (var cell in row.Elements(S + "c"))
                         {
                             string address = (string)cell.Attribute("r") ?? "";
@@ -154,17 +164,21 @@ namespace DinkCel
                             var formula = cell.Element(S + "f");
                             if (formula != null && !string.IsNullOrEmpty(formula.Value)) value = "=" + formula.Value;
                             var snapshot = new CellSnapshot { Text = value };
-                            int styleIndex = (int?)cell.Attribute("s") ?? 0;
+                            int inheritedStyle;
+                            if (!columnStyles.TryGetValue(col, out inheritedStyle)) inheritedStyle = 0;
+                            int styleIndex = (int?)cell.Attribute("s") ?? (int?)row.Attribute("s") ?? inheritedStyle;
                             if (styleIndex >= 0 && styleIndex < styles.Count)
                             {
                                 CellSnapshot style = styles[styleIndex];
                                 snapshot.NumberFormat = style.NumberFormat;
                                 snapshot.HasFont = style.HasFont;
+                                snapshot.FontName = style.FontName;
                                 snapshot.FontStyle = style.FontStyle;
                                 snapshot.FontSize = style.FontSize;
                                 snapshot.ForeColor = style.ForeColor;
                                 snapshot.BackColor = style.BackColor;
                                 snapshot.Alignment = style.Alignment;
+                                snapshot.Extras = CellExtras.Copy(style.Extras);
                             }
                             sheet.Cells[line * columns + col] = snapshot;
                         }
@@ -397,18 +411,29 @@ namespace DinkCel
                 root.Add(new XElement(S + "sheetViews", new XElement(S + "sheetView", new XAttribute("workbookViewId", 0),
                     new XElement(S + "pane", new XAttribute("xSplit", sheet.FreezeColumn), new XAttribute("ySplit", sheet.FreezeRow),
                         new XAttribute("topLeftCell", ColumnName(sheet.FreezeColumn) + (sheet.FreezeRow + 1)), new XAttribute("state", "frozen")))));
-            if (sheet.ColumnWidths.Count > 0)
+            if (sheet.ColumnWidths.Count > 0 || sheet.HiddenColumns.Count > 0)
             {
                 var cols = new XElement(S + "cols");
-                foreach (var pair in sheet.ColumnWidths.OrderBy(x => x.Key)) cols.Add(new XElement(S + "col", new XAttribute("min", pair.Key + 1), new XAttribute("max", pair.Key + 1), new XAttribute("width", Math.Max(1, (pair.Value - 5) / 7.0).ToString(CultureInfo.InvariantCulture)), new XAttribute("customWidth", 1)));
+                foreach (int index in sheet.ColumnWidths.Keys.Union(sheet.HiddenColumns).OrderBy(x => x))
+                {
+                    int width;
+                    if (!sheet.ColumnWidths.TryGetValue(index, out width)) width = 120;
+                    var col = new XElement(S + "col", new XAttribute("min", index + 1),
+                        new XAttribute("max", index + 1), new XAttribute("width",
+                            Math.Max(1, (width - 5) / 7.0).ToString(CultureInfo.InvariantCulture)),
+                        new XAttribute("customWidth", 1));
+                    if (sheet.HiddenColumns.Contains(index)) col.SetAttributeValue("hidden", 1);
+                    cols.Add(col);
+                }
                 root.Add(cols);
             }
             var data = new XElement(S + "sheetData");
             for (int r = 0; r < rows; r++)
             {
                 var entries = sheet.Cells.Where(x => x.Key / columns == r).OrderBy(x => x.Key).ToList();
-                if (entries.Count == 0 && !sheet.RowHeights.ContainsKey(r)) continue;
+                if (entries.Count == 0 && !sheet.RowHeights.ContainsKey(r) && !sheet.HiddenRows.Contains(r)) continue;
                 var row = new XElement(S + "row", new XAttribute("r", r + 1));
+                if (sheet.HiddenRows.Contains(r)) row.SetAttributeValue("hidden", 1);
                 if (sheet.RowHeights.ContainsKey(r)) { row.SetAttributeValue("ht", (sheet.RowHeights[r] * 72.0 / 96).ToString(CultureInfo.InvariantCulture)); row.SetAttributeValue("customHeight", 1); }
                 foreach (var pair in entries)
                 {

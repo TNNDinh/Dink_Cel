@@ -12,7 +12,15 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.5.0 — Formula Engine
+## Tính năng v0.6.0 — Formatting
+
+- **Font:** chọn họ font và cỡ chữ; in đậm, nghiêng, gạch chân, gạch ngang và màu chữ. Hộp chọn font cho phép đặt cỡ bất kỳ trong phạm vi hỗ trợ.
+- **Ô:** màu nền, viền từng cạnh với kiểu và màu, căn ngang/dọc, xuống dòng, thu chữ vừa ô, thụt lề và xoay chữ.
+- **Số:** General, Number, Currency, Accounting, Percentage, Date, Time, Scientific, Fraction và định dạng tùy chỉnh. Ngày giờ từ Excel hiển thị theo định dạng ô.
+- **Công cụ:** Chổi định dạng trên thanh công cụ; Xóa định dạng, Xóa nội dung, Xóa toàn bộ. Có thể ẩn/hiện, đặt kích thước và AutoFit hàng/cột.
+- **Tương thích:** lưu/mở các thuộc tính định dạng trên trong `.dinkcel`, `.xlsx` và phần lớn thuộc tính trong `.xls`; dán bảng từ Excel qua clipboard HTML giữ font, màu, căn lề, viền và định dạng số thông dụng.
+
+### Tính năng từ v0.5.0 — Formula Engine
 
 - **Tra cứu:** `XLOOKUP`, `VLOOKUP`, `HLOOKUP`, `INDEX`, `MATCH` với khớp chính xác và gần đúng; `XLOOKUP` hỗ trợ tìm từ cuối và ký tự đại diện.
 - **Điều kiện:** `IFERROR`, `IFNA`, `SUMIFS`, `COUNTIFS`, `AVERAGEIF`, `AVERAGEIFS`, `MAXIFS`, `MINIFS`; `COUNTIF` và `SUMIF` hỗ trợ điều kiện so sánh, ký tự đại diện.
@@ -101,7 +109,8 @@ File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx`, `.xls` và `.o
 - XlsxFile.cs, XlsxStyles.cs và XlsxCharts.cs: đọc/ghi `.xlsx` và biểu đồ.
 - XlsFile.cs, OdsFile.cs, PdfFile.cs: đọc/ghi `.xls`, `.ods` và xuất PDF.
 - WorkbookFeatures.cs, SpreadsheetV3Ui.cs và SpreadsheetOutputUi.cs: metadata và giao diện v0.3.
-- SpreadsheetEditingUi.cs: điều hướng, Name Box, Formula Bar, vùng chọn, Fill và clipboard v0.4.
+- SpreadsheetEditingUi.cs: điều hướng, Name Box, Formula Bar, vùng chọn, Fill và clipboard.
+- SpreadsheetFormatting.cs: công cụ định dạng, viền ô và đọc định dạng từ clipboard HTML của Excel.
 - vendor/: thư viện NPOI, SharpZipLib, PDFsharp cùng giấy phép; nội dung giấy phép được nhúng trong `.exe` và xem qua menu **Trợ giúp**.
 - FormulaEngine.cs và FormulaEngineV5.cs: phân tích, tính công thức, theo dõi quan hệ phụ thuộc và dịch tham chiếu khi kéo ô.
 - ThemePalette.cs: các mẫu màu và hộp chọn giao diện.

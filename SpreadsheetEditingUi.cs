@@ -441,9 +441,13 @@ namespace DinkCel
                 Clipboard.ContainsData("DinkCel.Cells") &&
                 string.Equals(Convert.ToString(Clipboard.GetData("DinkCel.Cells")),
                     copiedToken, StringComparison.Ordinal);
-            if (!internalCopy && !Clipboard.ContainsText()) return;
+            if (!internalCopy && !Clipboard.ContainsText() && !Clipboard.ContainsText(TextDataFormat.Html)) return;
             string text = Clipboard.ContainsText() ? Clipboard.GetText() : copiedClipboardText;
-            if (kind == PasteKind.Formats && !internalCopy) return;
+            List<List<CellState>> externalHtml = null;
+            if (!internalCopy && Clipboard.ContainsText(TextDataFormat.Html))
+                externalHtml = ParseExcelHtml(Clipboard.GetText(TextDataFormat.Html));
+            if (externalHtml != null && externalHtml.Count == 0) externalHtml = null;
+            if (kind == PasteKind.Formats && !internalCopy && externalHtml == null) return;
             int targetRow = grid.CurrentCell.RowIndex, targetColumn = grid.CurrentCell.ColumnIndex;
             int rows, columns;
             List<List<string>> external = null;
@@ -451,7 +455,8 @@ namespace DinkCel
             { rows = copiedCells.GetLength(0); columns = copiedCells.GetLength(1); }
             else
             {
-                external = ParseClipboardText(text);
+                external = externalHtml == null ? ParseClipboardText(text) :
+                    externalHtml.Select(r => r.Select(c => Convert.ToString(c.Value) ?? "").ToList()).ToList();
                 rows = external.Count;
                 columns = external.Max(r => r.Count);
             }
@@ -497,6 +502,7 @@ namespace DinkCel
                             {
                                 grid[copiedLeft + c, copiedTop + r].Value = null;
                                 grid[copiedLeft + c, copiedTop + r].Style = new DataGridViewCellStyle();
+                                grid[copiedLeft + c, copiedTop + r].Tag = null;
                             }
                 for (int r = 0; r < outputRows; r++)
                     for (int c = 0; c < outputColumns; c++)
@@ -515,9 +521,14 @@ namespace DinkCel
                                     targetRow + r - copiedTop - sr, targetColumn + c - copiedLeft - sc,
                                     RowCount, ColumnCount) : raw;
                         }
-                        if (internalCopy && (kind == PasteKind.All || kind == PasteKind.Formats || kind == PasteKind.Transpose))
-                            cell.Style = copiedCells[sr, sc].Style == null ? new DataGridViewCellStyle() :
-                                new DataGridViewCellStyle(copiedCells[sr, sc].Style);
+                        if ((internalCopy || externalHtml != null) &&
+                            (kind == PasteKind.All || kind == PasteKind.Formats || kind == PasteKind.Transpose))
+                        {
+                            CellState source = internalCopy ? copiedCells[sr, sc] : externalHtml[sr][sc];
+                            cell.Style = source.Style == null ? new DataGridViewCellStyle() :
+                                new DataGridViewCellStyle(source.Style);
+                            cell.Tag = CellExtras.Copy(source.Extras);
+                        }
                     }
                 if (moveCut && copiedSheetIndex != activeSheetIndex && copiedSheetIndex < sheets.Count)
                 {
@@ -591,6 +602,7 @@ namespace DinkCel
                         grid[column, row].Value = value;
                         grid[column, row].Style = source.Style == null ? new DataGridViewCellStyle() :
                             new DataGridViewCellStyle(source.Style);
+                        grid[column, row].Tag = CellExtras.Copy(source.Extras);
                     }
             }
             finally { loading = false; }
@@ -683,6 +695,7 @@ namespace DinkCel
                         destination.Value = value;
                         destination.Style = original.Style == null ? new DataGridViewCellStyle() :
                             new DataGridViewCellStyle(original.Style);
+                        destination.Tag = CellExtras.Copy(original.Extras);
                     }
             }
             finally { loading = false; }

@@ -30,7 +30,14 @@ namespace DinkCel
             var book = new WorkbookSnapshot();
             book.Sheets[0].Name = "Data";
             book.Sheets[0].Cells[0] = new CellSnapshot { Text = "Nhãn" };
-            book.Sheets[0].Cells[26] = new CellSnapshot { Text = "12.5", NumberFormat = "0.00" };
+            book.Sheets[0].Cells[26] = new CellSnapshot { Text = "12.5", NumberFormat = "0.00",
+                HasFont = true, FontName = "Consolas", FontStyle = FontStyle.Bold | FontStyle.Underline,
+                FontSize = 12, ForeColor = Color.Blue, BackColor = Color.Yellow,
+                Alignment = System.Windows.Forms.DataGridViewContentAlignment.BottomRight,
+                Extras = new CellExtras { Wrap = true, Indent = 2, Rotation = -30,
+                    Left = new BorderEdge { Style = "thin", Color = Color.Red } } };
+            book.Sheets[0].HiddenRows.Add(3);
+            book.Sheets[0].HiddenColumns.Add(4);
             book.Sheets[0].Cells[27] = new CellSnapshot { Text = "=A2*2" };
             book.Sheets[0].Merges.Add(new Rectangle(0, 0, 2, 1));
             var second = new SheetSnapshot { Name = "More" };
@@ -48,6 +55,22 @@ namespace DinkCel
                 Equal("Nhãn", legacy.Sheets[0].Cells[0].Text);
                 Equal("=A2*2", legacy.Sheets[0].Cells[27].Text);
                 Equal("0.00", legacy.Sheets[0].Cells[26].NumberFormat);
+                Equal("Consolas", legacy.Sheets[0].Cells[26].FontName);
+                Equal(FontStyle.Bold | FontStyle.Underline, legacy.Sheets[0].Cells[26].FontStyle);
+                Equal("thin", legacy.Sheets[0].Cells[26].Extras.Left.Style);
+                Equal(true, legacy.Sheets[0].Cells[26].Extras.Wrap);
+                Equal(2, legacy.Sheets[0].Cells[26].Extras.Indent);
+                Equal(-30, legacy.Sheets[0].Cells[26].Extras.Rotation);
+                Equal(true, legacy.Sheets[0].HiddenRows.Contains(3));
+                Equal(true, legacy.Sheets[0].HiddenColumns.Contains(4));
+                var manyStyled = new WorkbookSnapshot();
+                for (int index = 0; index < 4100; index++)
+                    manyStyled.Cells[index] = new CellSnapshot { Text = "1", NumberFormat = "0.00",
+                        HasFont = true, FontName = "Arial", FontStyle = FontStyle.Bold };
+                string manyStylesPath = basePath + "_styles.xls";
+                XlsFile.Write(manyStylesPath, manyStyled, 200, 26);
+                Equal("0.00", XlsFile.Read(manyStylesPath, 200, 26).Cells[4099].NumberFormat);
+                File.Delete(manyStylesPath);
                 Equal(1, legacy.Sheets[0].Merges.Count);
                 Equal("=Data!A2", legacy.Sheets[1].Cells[0].Text);
                 Equal("Revenue", legacy.NamedRanges[0].Name);

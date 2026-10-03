@@ -271,16 +271,24 @@ namespace DinkCel
             state.Validations.AddRange(source.Validations);
             for (int r = 0; r < RowCount; r++) state.RowHeights[r] = source.RowHeights.ContainsKey(r) ? source.RowHeights[r] : 27;
             for (int c = 0; c < ColumnCount; c++) state.ColumnWidths[c] = source.ColumnWidths.ContainsKey(c) ? source.ColumnWidths[c] : 120;
+            foreach (int row in source.HiddenRows) state.HiddenRows[row] = true;
+            foreach (int column in source.HiddenColumns) state.HiddenColumns[column] = true;
             foreach (var pair in source.Cells)
             {
                 var cell = pair.Value;
                 var style = new DataGridViewCellStyle();
-                if (cell.HasFont) style.Font = new Font("Arial", cell.FontSize, cell.FontStyle);
+                if (cell.HasFont) style.Font = new Font(cell.FontName, cell.FontSize, cell.FontStyle);
                 if (!cell.ForeColor.IsEmpty) style.ForeColor = cell.ForeColor;
                 if (!cell.BackColor.IsEmpty) style.BackColor = cell.BackColor;
                 style.Alignment = cell.Alignment;
                 style.Format = cell.NumberFormat;
-                state.Cells[pair.Key] = new CellState { Value = cell.Text, Style = style };
+                if (cell.Extras != null)
+                {
+                    style.WrapMode = cell.Extras.Wrap ? DataGridViewTriState.True : DataGridViewTriState.NotSet;
+                    style.Padding = new Padding(cell.Extras.Indent * 8, 0, 0, 0);
+                }
+                state.Cells[pair.Key] = new CellState { Value = cell.Text, Style = style,
+                    Extras = CellExtras.Copy(cell.Extras) };
             }
             return state;
         }
@@ -297,17 +305,21 @@ namespace DinkCel
             result.Validations.AddRange(source.Validations);
             for (int r = 0; r < RowCount; r++) if (source.RowHeights[r] != 27) result.RowHeights[r] = source.RowHeights[r];
             for (int c = 0; c < ColumnCount; c++) if (source.ColumnWidths[c] != 120) result.ColumnWidths[c] = source.ColumnWidths[c];
+            for (int r = 0; r < RowCount; r++) if (source.HiddenRows[r]) result.HiddenRows.Add(r);
+            for (int c = 0; c < ColumnCount; c++) if (source.HiddenColumns[c]) result.HiddenColumns.Add(c);
             foreach (var pair in source.Cells)
             {
                 var style = pair.Value.Style;
                 result.Cells[pair.Key] = new CellSnapshot { Text = Convert.ToString(pair.Value.Value) ?? "",
                     HasFont = style != null && style.Font != null,
+                    FontName = style != null && style.Font != null ? style.Font.Name : "Arial",
                     FontStyle = style != null && style.Font != null ? style.Font.Style : FontStyle.Regular,
                     FontSize = style != null && style.Font != null ? style.Font.Size : 10F,
                     ForeColor = style == null ? Color.Empty : style.ForeColor,
                     BackColor = style == null ? Color.Empty : style.BackColor,
                     Alignment = style == null ? DataGridViewContentAlignment.NotSet : style.Alignment,
-                    NumberFormat = style == null ? "" : style.Format };
+                    NumberFormat = style == null ? "" : style.Format,
+                    Extras = CellExtras.Copy(pair.Value.Extras) };
             }
             return result;
         }
@@ -321,6 +333,8 @@ namespace DinkCel
             if (!string.IsNullOrEmpty(sheet.ThemeId)) root.SetAttributeValue("theme", sheet.ThemeId);
             foreach (var pair in sheet.RowHeights) root.Add(new XElement("row", new XAttribute("index", pair.Key), new XAttribute("height", pair.Value)));
             foreach (var pair in sheet.ColumnWidths) root.Add(new XElement("column", new XAttribute("index", pair.Key), new XAttribute("width", pair.Value)));
+            foreach (int row in sheet.HiddenRows) root.Add(new XElement("hiddenRow", new XAttribute("index", row)));
+            foreach (int column in sheet.HiddenColumns) root.Add(new XElement("hiddenColumn", new XAttribute("index", column)));
             foreach (var merge in sheet.Merges) root.Add(new XElement("merge", new XAttribute("row", merge.Y), new XAttribute("column", merge.X),
                 new XAttribute("width", merge.Width), new XAttribute("height", merge.Height)));
             foreach (var rule in sheet.Rules) root.Add(new XElement("conditional", new XAttribute("row", rule.Range.Y),
@@ -333,11 +347,12 @@ namespace DinkCel
                 var cell = pair.Value;
                 var element = new XElement("cell", new XAttribute("row", pair.Key / ColumnCount + 1),
                     new XAttribute("column", pair.Key % ColumnCount + 1), cell.Text);
-                if (cell.HasFont) { element.SetAttributeValue("fontStyle", (int)cell.FontStyle); element.SetAttributeValue("fontSize", cell.FontSize.ToString(CultureInfo.InvariantCulture)); }
+                if (cell.HasFont) { element.SetAttributeValue("fontStyle", (int)cell.FontStyle); element.SetAttributeValue("fontSize", cell.FontSize.ToString(CultureInfo.InvariantCulture)); element.SetAttributeValue("fontName", cell.FontName); }
                 if (!cell.ForeColor.IsEmpty) element.SetAttributeValue("fore", ColorTranslator.ToHtml(cell.ForeColor));
                 if (!cell.BackColor.IsEmpty) element.SetAttributeValue("back", ColorTranslator.ToHtml(cell.BackColor));
                 if (cell.Alignment != DataGridViewContentAlignment.NotSet) element.SetAttributeValue("align", cell.Alignment);
                 if (!string.IsNullOrEmpty(cell.NumberFormat)) element.SetAttributeValue("numberFormat", cell.NumberFormat);
+                CellExtras.WriteXml(element, cell.Extras);
                 root.Add(element);
             }
             return root;
@@ -447,8 +462,8 @@ namespace DinkCel
             for (int c = ColumnCount - 1; c >= 0; c--) grid.Columns[c].Frozen = false;
             for (int r = 0; r < RowCount; r++)
             {
-                grid.Rows[r].Visible = filterColumn < 0 || r == 0 || r < freezeRow ||
-                    (Convert.ToString(grid[filterColumn, r].Value) ?? "").IndexOf(filterValue, StringComparison.CurrentCultureIgnoreCase) >= 0;
+                grid.Rows[r].Visible = !manualHiddenRows[r] && (filterColumn < 0 || r == 0 || r < freezeRow ||
+                    (Convert.ToString(grid[filterColumn, r].Value) ?? "").IndexOf(filterValue, StringComparison.CurrentCultureIgnoreCase) >= 0);
             }
             for (int r = 0; r < freezeRow && r < RowCount; r++) grid.Rows[r].Frozen = grid.Rows[r].Visible;
             for (int c = 0; c < freezeColumn && c < ColumnCount; c++) grid.Columns[c].Frozen = true;
@@ -489,8 +504,9 @@ namespace DinkCel
 
         private void SetNumberFormat()
         {
-            string format = Prompt("Định dạng số (ví dụ N2, P1, C2, 0.00)", "N2"); if (format == null) return;
-            try { 1234.5.ToString(format, CultureInfo.CurrentCulture); }
+            string format = Prompt("Mã định dạng Excel (ví dụ #,##0.00, 0.0%, dd/MM/yyyy)", "#,##0.00"); if (format == null) return;
+            format = NormalizeNumberFormat(format);
+            try { FormatNumeric(1234.5, format); }
             catch (FormatException) { MessageBox.Show(this, "Định dạng số không hợp lệ."); return; }
             ApplyToSelection(c => c.Style.Format = format);
         }
@@ -558,17 +574,37 @@ namespace DinkCel
         private void AutoFitColumn()
         {
             if (grid.CurrentCell == null) return;
-            int c = grid.CurrentCell.ColumnIndex, width = 65;
-            for (int r = 0; r < RowCount; r++) width = Math.Max(width, TextRenderer.MeasureText(Convert.ToString(grid[c, r].FormattedValue) ?? "", grid.Font).Width + 18);
-            grid.Columns[c].Width = Math.Min(600, width);
+            foreach (int c in grid.SelectedCells.Cast<DataGridViewCell>().Select(cell => cell.ColumnIndex).Distinct())
+            {
+                int width = 65;
+                for (int r = 0; r < RowCount; r++)
+                {
+                    DataGridViewCell cell = grid[c, r];
+                    Font font = cell.InheritedStyle.Font ?? grid.Font;
+                    width = Math.Max(width, TextRenderer.MeasureText(Convert.ToString(cell.FormattedValue) ?? "", font).Width +
+                        cell.InheritedStyle.Padding.Left + 18);
+                }
+                grid.Columns[c].Width = Math.Min(800, width);
+            }
         }
 
         private void AutoFitRow()
         {
             if (grid.CurrentCell == null) return;
-            int r = grid.CurrentCell.RowIndex, height = 27;
-            for (int c = 0; c < ColumnCount; c++) height = Math.Max(height, TextRenderer.MeasureText(Convert.ToString(grid[c, r].FormattedValue) ?? "", grid.Font, new Size(grid.Columns[c].Width, 1000), TextFormatFlags.WordBreak).Height + 8);
-            grid.Rows[r].Height = Math.Min(300, height);
+            foreach (int r in grid.SelectedCells.Cast<DataGridViewCell>().Select(cell => cell.RowIndex).Distinct())
+            {
+                int height = 27;
+                for (int c = 0; c < ColumnCount; c++)
+                {
+                    DataGridViewCell cell = grid[c, r];
+                    Font font = cell.InheritedStyle.Font ?? grid.Font;
+                    TextFormatFlags flags = cell.InheritedStyle.WrapMode == DataGridViewTriState.True ?
+                        TextFormatFlags.WordBreak : TextFormatFlags.SingleLine;
+                    height = Math.Max(height, TextRenderer.MeasureText(Convert.ToString(cell.FormattedValue) ?? "",
+                        font, new Size(Math.Max(20, grid.Columns[c].Width - 8), 1000), flags).Height + 8);
+                }
+                grid.Rows[r].Height = Math.Min(400, height);
+            }
         }
 
         private void FreezeAtCell()
