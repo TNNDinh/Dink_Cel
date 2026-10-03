@@ -60,6 +60,19 @@ namespace DinkCel
         public Rectangle Range;
         public double Threshold;
         public Color Color;
+        public string Kind = "Greater";
+        public string Value1 = "";
+        public string Value2 = "";
+        public Color Color2 = Color.Empty;
+    }
+
+    internal sealed class FilterCriterion
+    {
+        public int Column;
+        public string Kind = "Text";
+        public string Operator = "Contains";
+        public string Value1 = "";
+        public string Value2 = "";
     }
 
     internal sealed class WorkbookSnapshot
@@ -88,6 +101,7 @@ namespace DinkCel
         public readonly HashSet<int> HiddenColumns = new HashSet<int>();
         public readonly List<Rectangle> Merges = new List<Rectangle>();
         public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
+        public readonly List<FilterCriterion> Filters = new List<FilterCriterion>();
         public readonly List<TableDefinition> Tables = new List<TableDefinition>();
         public readonly List<ChartDefinition> Charts = new List<ChartDefinition>();
         public readonly List<ValidationRule> Validations = new List<ValidationRule>();
@@ -104,6 +118,7 @@ namespace DinkCel
         public Color TabColor = Color.Empty;
         public readonly List<Rectangle> Merges = new List<Rectangle>();
         public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
+        public readonly List<FilterCriterion> Filters = new List<FilterCriterion>();
         public readonly List<TableDefinition> Tables = new List<TableDefinition>();
         public readonly List<ChartDefinition> Charts = new List<ChartDefinition>();
         public readonly List<ValidationRule> Validations = new List<ValidationRule>();
@@ -166,6 +181,7 @@ namespace DinkCel
         private string[,] copiedDisplays;
         private string copiedClipboardText;
         private readonly List<ConditionalRule> conditionalRules = new List<ConditionalRule>();
+        private readonly List<FilterCriterion> activeFilters = new List<FilterCriterion>();
         private readonly List<TableDefinition> tables = new List<TableDefinition>();
         private readonly List<ChartDefinition> charts = new List<ChartDefinition>();
         private readonly List<ValidationRule> validations = new List<ValidationRule>();
@@ -517,7 +533,8 @@ namespace DinkCel
             grid.EditingControlShowing += GridEditingControlShowing;
             grid.CellBeginEdit += delegate(object sender, DataGridViewCellCancelEventArgs e)
             {
-                if (ValidationFor(e.RowIndex, e.ColumnIndex) == null) return;
+                ValidationRule activeRule = ValidationFor(e.RowIndex, e.ColumnIndex);
+                if (activeRule == null || activeRule.Kind != "List") return;
                 e.Cancel = true;
                 int row = e.RowIndex, column = e.ColumnIndex;
                 BeginInvoke((Action)delegate { ShowValidationDropdown(row, column); });
@@ -530,7 +547,7 @@ namespace DinkCel
                     return;
                 }
                 if (e.RowIndex >= 0 && e.ColumnIndex >= 0 &&
-                    ValidationFor(e.RowIndex, e.ColumnIndex) != null)
+                    ValidationFor(e.RowIndex, e.ColumnIndex) != null && ValidationFor(e.RowIndex, e.ColumnIndex).Kind == "List")
                     ShowValidationDropdown(e.RowIndex, e.ColumnIndex);
             };
             grid.SelectionChanged += delegate
@@ -544,6 +561,12 @@ namespace DinkCel
                 }
                 UpdateSelection();
                 ScheduleSelectionSummary();
+                if (grid.CurrentCell != null)
+                {
+                    ValidationRule hint = ValidationFor(grid.CurrentCell.RowIndex, grid.CurrentCell.ColumnIndex);
+                    if (hint != null && !string.IsNullOrEmpty(hint.InputMessage))
+                        status.Text = (string.IsNullOrEmpty(hint.InputTitle) ? "" : hint.InputTitle + ": ") + hint.InputMessage;
+                }
             };
             grid.CellValueChanged += delegate(object sender, DataGridViewCellEventArgs e)
             {
@@ -553,6 +576,7 @@ namespace DinkCel
                         !ValidateCellChange(e.RowIndex, e.ColumnIndex)) return;
                     RecordChange();
                     Recalculate(e.RowIndex, e.ColumnIndex);
+                    if (filterColumn >= 0 || activeFilters.Count > 0) ApplyFreezeAndFilter();
                     MarkDirty();
                     UpdateSelection();
                 }
@@ -724,11 +748,7 @@ namespace DinkCel
                 try { e.Value = FormatNumeric(numeric, format); e.FormattingApplied = true; }
                 catch (FormatException) { }
             }
-            foreach (ConditionalRule rule in conditionalRules)
-                if (rule.Range.Contains(e.ColumnIndex, e.RowIndex) &&
-                    double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out numeric) &&
-                    numeric > rule.Threshold)
-                    e.CellStyle.BackColor = rule.Color;
+            ApplyConditionalFormatting(e, raw);
         }
 
         private void GridEditingControlShowing(object sender,
@@ -1054,6 +1074,7 @@ namespace DinkCel
             { state.Hidden = sheets[activeSheetIndex].Hidden; state.TabColor = sheets[activeSheetIndex].TabColor; }
             state.Merges.AddRange(merges);
             state.Rules.AddRange(conditionalRules);
+            state.Filters.AddRange(activeFilters);
             state.Tables.AddRange(tables);
             state.Charts.AddRange(charts);
             state.Validations.AddRange(validations);
@@ -1115,6 +1136,7 @@ namespace DinkCel
 
         private void RecordChange()
         {
+            conditionalStatistics.Clear();
             if (lastState == null)
             {
                 lastState = CaptureSheet();
@@ -1130,6 +1152,7 @@ namespace DinkCel
 
         private void RestoreSheet(SheetState state)
         {
+            conditionalStatistics.Clear();
             if (validationEditor != null)
             { grid.Controls.Remove(validationEditor); validationEditor.Dispose(); validationEditor = null; }
             loading = true;
@@ -1165,6 +1188,7 @@ namespace DinkCel
                 UpdateMergedReadOnly();
                 conditionalRules.Clear();
                 conditionalRules.AddRange(state.Rules);
+                activeFilters.Clear(); activeFilters.AddRange(state.Filters);
                 tables.Clear(); tables.AddRange(state.Tables);
                 charts.Clear(); charts.AddRange(state.Charts);
                 validations.Clear(); validations.AddRange(state.Validations);
@@ -1300,6 +1324,7 @@ namespace DinkCel
             merges.Clear();
             UpdateMergedReadOnly();
             conditionalRules.Clear();
+            activeFilters.Clear();
             tables.Clear(); charts.Clear(); validations.Clear();
             namedRanges.Clear(); pivots.Clear();
             freezeRow = freezeColumn = 0;
@@ -1436,6 +1461,12 @@ namespace DinkCel
                     sheet.FreezeColumn = (int?)sheetElement.Attribute("freezeColumn") ?? 0;
                     sheet.FilterColumn = (int?)sheetElement.Attribute("filterColumn") ?? -1;
                     sheet.FilterValue = (string)sheetElement.Attribute("filterValue") ?? "";
+                    foreach (XElement criterion in sheetElement.Elements("filterCriterion"))
+                        sheet.Filters.Add(new FilterCriterion { Column = (int?)criterion.Attribute("column") ?? 0,
+                            Kind = (string)criterion.Attribute("kind") ?? "Text",
+                            Operator = (string)criterion.Attribute("operator") ?? "Contains",
+                            Value1 = (string)criterion.Attribute("value1") ?? "",
+                            Value2 = (string)criterion.Attribute("value2") ?? "" });
                     foreach (XElement merge in sheetElement.Elements("merge"))
                         sheet.Merges.Add(new Rectangle((int)merge.Attribute("column"),
                             (int)merge.Attribute("row"), (int)merge.Attribute("width"),
@@ -1443,7 +1474,12 @@ namespace DinkCel
                     foreach (XElement rule in sheetElement.Elements("conditional"))
                         sheet.Rules.Add(new ConditionalRule { Range = new Rectangle((int)rule.Attribute("column"),
                             (int)rule.Attribute("row"), (int)rule.Attribute("width"), (int)rule.Attribute("height")),
-                            Threshold = (double)rule.Attribute("threshold"), Color = ColorTranslator.FromHtml((string)rule.Attribute("color")) });
+                            Threshold = (double?)rule.Attribute("threshold") ?? 0,
+                            Color = ColorTranslator.FromHtml((string)rule.Attribute("color") ?? "#90EE90"),
+                            Color2 = ColorFromAttribute((string)rule.Attribute("color2")),
+                            Kind = (string)rule.Attribute("kind") ?? "Greater",
+                            Value1 = (string)rule.Attribute("value1") ?? "",
+                            Value2 = (string)rule.Attribute("value2") ?? "" });
                     ReadSheetMetadata(sheetElement, sheet);
                     foreach (XElement dimension in sheetElement.Elements("row"))
                         sheet.RowHeights[(int)dimension.Attribute("index")] = (int)dimension.Attribute("height");

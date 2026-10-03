@@ -22,6 +22,16 @@ namespace DinkCel
     {
         public Rectangle Range;
         public readonly List<string> Choices = new List<string>();
+        public string Kind = "List";
+        public string Operator = "Between";
+        public string Value1 = "";
+        public string Value2 = "";
+        public bool AllowBlank = true;
+        public string InputTitle = "";
+        public string InputMessage = "";
+        public string ErrorTitle = "";
+        public string ErrorMessage = "";
+        public string ErrorStyle = "Stop";
     }
 
     internal sealed class NamedRange
@@ -74,7 +84,12 @@ namespace DinkCel
             }
             foreach (ValidationRule rule in sheet.Validations)
             {
-                var element = new XElement("validation");
+                var element = new XElement("validation", new XAttribute("kind", rule.Kind),
+                    new XAttribute("operator", rule.Operator), new XAttribute("value1", rule.Value1),
+                    new XAttribute("value2", rule.Value2), new XAttribute("allowBlank", rule.AllowBlank),
+                    new XAttribute("inputTitle", rule.InputTitle), new XAttribute("inputMessage", rule.InputMessage),
+                    new XAttribute("errorTitle", rule.ErrorTitle), new XAttribute("errorMessage", rule.ErrorMessage),
+                    new XAttribute("errorStyle", rule.ErrorStyle));
                 SetRange(element, rule.Range);
                 foreach (string choice in rule.Choices) element.Add(new XElement("choice", choice));
                 root.Add(element);
@@ -91,7 +106,17 @@ namespace DinkCel
                     Kind = (string)element.Attribute("kind") ?? "Column", Range = GetRange(element) });
             foreach (XElement element in root.Elements("validation"))
             {
-                var rule = new ValidationRule { Range = GetRange(element) };
+                var rule = new ValidationRule { Range = GetRange(element),
+                    Kind = (string)element.Attribute("kind") ?? "List",
+                    Operator = (string)element.Attribute("operator") ?? "Between",
+                    Value1 = (string)element.Attribute("value1") ?? "",
+                    Value2 = (string)element.Attribute("value2") ?? "",
+                    AllowBlank = (bool?)element.Attribute("allowBlank") ?? true,
+                    InputTitle = (string)element.Attribute("inputTitle") ?? "",
+                    InputMessage = (string)element.Attribute("inputMessage") ?? "",
+                    ErrorTitle = (string)element.Attribute("errorTitle") ?? "",
+                    ErrorMessage = (string)element.Attribute("errorMessage") ?? "",
+                    ErrorStyle = (string)element.Attribute("errorStyle") ?? "Stop" };
                 foreach (XElement choice in element.Elements("choice")) rule.Choices.Add(choice.Value);
                 sheet.Validations.Add(rule);
             }

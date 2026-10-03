@@ -12,7 +12,16 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.7.0 — Giao diện DinkCel
+## Tính năng v0.7.1 — Data Tools
+
+- **Sort:** tăng/giảm dần và sắp xếp tối đa ba cấp theo chữ, số, ngày hoặc màu nền ô. Giữ nguyên nội dung, kiểu và dữ liệu phụ của ô khi đổi hàng; hàng tiêu đề đầu tiên được giữ lại.
+- **Filter:** lọc nhiều cột theo chữ, số hoặc ngày; hỗ trợ Contains, Begins With, Equals, Greater, Less, Between, Blank và Nonblank. Có thể bỏ toàn bộ bộ lọc từ menu **Dữ liệu**.
+- **Find & Replace:** `Ctrl+F`/`Ctrl+H` mở hộp thoại có Tìm tiếp, Tìm tất cả, Thay và Thay tất cả. Chọn trang hiện tại hoặc cả workbook, giá trị hiển thị hoặc công thức gốc; có phân biệt hoa thường, khớp toàn ô và wildcard `*`/`?`. Khi tìm trong giá trị hiển thị, công thức chỉ được tìm; muốn thay công thức hãy chọn chế độ công thức gốc.
+- **Data Validation:** danh sách, số nguyên, số thập phân, ngày, giờ, độ dài văn bản và công thức tùy chỉnh. Có điều kiện so sánh/khoảng, cho phép ô trống, gợi ý nhập và cảnh báo lỗi Stop/Warning/Information. Chọn vùng rồi dùng menu **Chèn > Kiểm tra dữ liệu**.
+- **Conditional Formatting:** Equal, Greater, Less, Between, Duplicate, Unique, Text Contains, Blank, Formula, Color Scale, Data Bar và Icon Set. Chọn vùng rồi dùng menu **Ô > Định dạng có điều kiện**; có lệnh xóa quy tắc trên vùng chọn.
+- Các điều kiện được lưu trong `.dinkcel`; `.xlsx` trao đổi các kiểu lọc, kiểm tra dữ liệu và định dạng có điều kiện thông dụng.
+
+### Tính năng từ v0.7.0 — Giao diện DinkCel
 
 - Giao diện desktop gọn hơn với thanh lệnh ngắn, nút theo ngữ cảnh, thanh định dạng nhỏ khi chọn vùng bằng chuột, bảng Inspector bên phải và sáu theme Light, Dark, Midnight, Paper, Solar, Mint. Lưới và biểu đồ đổi màu theo theme.
 - `Ctrl+K` tìm lệnh, sheet, vùng có tên, Table, biểu đồ và hàm. `Ctrl+Shift+P` đi nhanh tới ô, sheet, vùng có tên, Table, biểu đồ hoặc ô chứa nội dung cần tìm. `Ctrl+Shift+I` mở/đóng Inspector; `Ctrl+Shift+M` bật/tắt chế độ tối giản. `Ctrl+P` vẫn dùng để in.

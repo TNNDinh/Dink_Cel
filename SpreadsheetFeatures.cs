@@ -26,8 +26,11 @@ namespace DinkCel
             var data = new ToolStripMenuItem("Dữ liệu");
             AddMenuItem(data, "Sắp xếp tăng dần", Keys.None, delegate { SortRows(false); });
             AddMenuItem(data, "Sắp xếp giảm dần", Keys.None, delegate { SortRows(true); });
+            AddMenuItem(data, "Sắp xếp nhiều cấp...", Keys.None, SortRowsAdvanced);
             AddMenuItem(data, "Lọc theo nội dung...", Keys.None, SetFilter);
-            AddMenuItem(data, "Bỏ lọc", Keys.None, delegate { filterColumn = -1; filterValue = ""; ApplyFreezeAndFilter(); RecordChange(); MarkDirty(); });
+            AddMenuItem(data, "Lọc nâng cao...", Keys.None, SetAdvancedFilter);
+            AddMenuItem(data, "Bỏ lọc", Keys.None, delegate { filterColumn = -1; filterValue = ""; activeFilters.Clear(); ApplyFreezeAndFilter(); RecordChange(); MarkDirty(); });
+            AddMenuItem(data, "Tìm...", Keys.Control | Keys.F, FindReplace);
             AddMenuItem(data, "Tìm và thay thế...", Keys.Control | Keys.H, FindReplace);
             AddMenuItem(data, "Tạo Pivot Table...", Keys.None, CreatePivot);
             AddMenuItem(data, "Làm mới Pivot Table", Keys.None, RefreshAllPivots);
@@ -37,6 +40,8 @@ namespace DinkCel
             AddMenuItem(insert, "Biểu đồ từ vùng chọn...", Keys.None, CreateChart);
             AddMenuItem(insert, "Xem biểu đồ...", Keys.None, OpenChart);
             AddMenuItem(insert, "Danh sách chọn cho ô...", Keys.None, AddDropdown);
+            AddMenuItem(insert, "Kiểm tra dữ liệu...", Keys.None, ConfigureValidation);
+            AddMenuItem(insert, "Bỏ kiểm tra dữ liệu", Keys.None, ClearValidation);
             menu.Items.Add(insert);
             var cells = new ToolStripMenuItem("Ô");
             AddMenuItem(cells, "Định dạng số...", Keys.None, SetNumberFormat);
@@ -47,6 +52,8 @@ namespace DinkCel
             AddMenuItem(cells, "Cố định tại ô đã chọn", Keys.None, FreezeAtCell);
             AddMenuItem(cells, "Bỏ cố định", Keys.None, delegate { freezeRow = freezeColumn = 0; ApplyFreezeAndFilter(); RecordChange(); MarkDirty(); });
             AddMenuItem(cells, "Tô màu có điều kiện...", Keys.None, ConditionalColor);
+            AddMenuItem(cells, "Định dạng có điều kiện...", Keys.None, ConfigureConditionalFormatting);
+            AddMenuItem(cells, "Xóa định dạng có điều kiện", Keys.None, ClearConditionalFormatting);
             AddMenuItem(cells, "Dán chỉ giá trị", Keys.None, PasteValues);
             AddMenuItem(cells, "Dán chỉ định dạng", Keys.None, PasteFormats);
             menu.Items.Add(cells);
@@ -411,6 +418,7 @@ namespace DinkCel
                 FilterColumn = source.FilterColumn, FilterValue = source.FilterValue };
             state.Merges.AddRange(source.Merges);
             state.Rules.AddRange(source.Rules);
+            state.Filters.AddRange(source.Filters);
             state.Tables.AddRange(source.Tables);
             state.Charts.AddRange(source.Charts);
             state.Validations.AddRange(source.Validations);
@@ -446,6 +454,7 @@ namespace DinkCel
                 FilterColumn = source.FilterColumn, FilterValue = source.FilterValue };
             result.Merges.AddRange(source.Merges);
             result.Rules.AddRange(source.Rules);
+            result.Filters.AddRange(source.Filters);
             result.Tables.AddRange(source.Tables);
             result.Charts.AddRange(source.Charts);
             result.Validations.AddRange(source.Validations);
@@ -479,6 +488,10 @@ namespace DinkCel
             if (sheet.Hidden) root.SetAttributeValue("hidden", true);
             if (!sheet.TabColor.IsEmpty) root.SetAttributeValue("tabColor", ColorTranslator.ToHtml(sheet.TabColor));
             if (!string.IsNullOrEmpty(sheet.ThemeId)) root.SetAttributeValue("theme", sheet.ThemeId);
+            foreach (FilterCriterion criterion in sheet.Filters)
+                root.Add(new XElement("filterCriterion", new XAttribute("column", criterion.Column),
+                    new XAttribute("kind", criterion.Kind), new XAttribute("operator", criterion.Operator),
+                    new XAttribute("value1", criterion.Value1), new XAttribute("value2", criterion.Value2)));
             foreach (var pair in sheet.RowHeights) root.Add(new XElement("row", new XAttribute("index", pair.Key), new XAttribute("height", pair.Value)));
             foreach (var pair in sheet.ColumnWidths) root.Add(new XElement("column", new XAttribute("index", pair.Key), new XAttribute("width", pair.Value)));
             foreach (int row in sheet.HiddenRows) root.Add(new XElement("hiddenRow", new XAttribute("index", row)));
@@ -488,7 +501,10 @@ namespace DinkCel
             foreach (var rule in sheet.Rules) root.Add(new XElement("conditional", new XAttribute("row", rule.Range.Y),
                 new XAttribute("column", rule.Range.X), new XAttribute("width", rule.Range.Width),
                 new XAttribute("height", rule.Range.Height), new XAttribute("threshold", rule.Threshold.ToString(CultureInfo.InvariantCulture)),
-                new XAttribute("color", ColorTranslator.ToHtml(rule.Color))));
+                new XAttribute("color", ColorTranslator.ToHtml(rule.Color)),
+                new XAttribute("color2", rule.Color2.IsEmpty ? "" : ColorTranslator.ToHtml(rule.Color2)),
+                new XAttribute("kind", rule.Kind), new XAttribute("value1", rule.Value1),
+                new XAttribute("value2", rule.Value2)));
             SerializeSheetMetadata(root, sheet);
             foreach (var pair in sheet.Cells)
             {
@@ -565,29 +581,7 @@ namespace DinkCel
         private void SortRows(bool descending)
         {
             if (grid.CurrentCell == null) return;
-            int column = grid.CurrentCell.ColumnIndex;
-            int first = 0, last = RowCount - 1;
-            if (grid.SelectedCells.Count > 1) { first = grid.SelectedCells.Cast<DataGridViewCell>().Min(c => c.RowIndex); last = grid.SelectedCells.Cast<DataGridViewCell>().Max(c => c.RowIndex); }
-            while (last > first && Enumerable.Range(0, ColumnCount).All(c => string.IsNullOrEmpty(Convert.ToString(grid[c, last].Value)))) last--;
-            if (last <= first) return;
-            var rows = new List<CellState[]>();
-            for (int r = first; r <= last; r++)
-            {
-                var values = new CellState[ColumnCount];
-                for (int c = 0; c < ColumnCount; c++) values[c] = new CellState { Value = grid[c, r].Value, Style = new DataGridViewCellStyle(grid[c, r].Style) };
-                rows.Add(values);
-            }
-            rows.Sort((a, b) =>
-            {
-                string x = Convert.ToString(a[column].Value) ?? "", y = Convert.ToString(b[column].Value) ?? "";
-                double nx, ny;
-                int cmp = double.TryParse(x, out nx) && double.TryParse(y, out ny) ? nx.CompareTo(ny) : StringComparer.CurrentCultureIgnoreCase.Compare(x, y);
-                return descending ? -cmp : cmp;
-            });
-            loading = true;
-            for (int r = first; r <= last; r++) for (int c = 0; c < ColumnCount; c++)
-            { grid[c, r].Value = rows[r - first][c].Value; grid[c, r].Style = rows[r - first][c].Style; }
-            loading = false; Recalculate(); RecordChange(); MarkDirty();
+            SortDataRows(new List<Tuple<int, bool, string>> { Tuple.Create(grid.CurrentCell.ColumnIndex, descending, "Auto") });
         }
 
         private void SetFilter()
@@ -596,22 +590,20 @@ namespace DinkCel
             string value = Prompt("Hiện các hàng chứa", filterValue);
             if (value == null) return;
             filterColumn = grid.CurrentCell.ColumnIndex; filterValue = value;
+            activeFilters.RemoveAll(f => f.Column == filterColumn);
             ApplyFreezeAndFilter(); RecordChange(); MarkDirty();
         }
 
         private void ApplyFreezeAndFilter()
         {
             if (filterColumn >= ColumnCount || filterColumn < -1) filterColumn = -1;
-            if (grid.CurrentCell != null && grid.CurrentCell.RowIndex > 0 && filterColumn >= 0 &&
-                grid.CurrentCell.RowIndex >= freezeRow &&
-                (Convert.ToString(grid[filterColumn, grid.CurrentCell.RowIndex].Value) ?? "").IndexOf(filterValue, StringComparison.CurrentCultureIgnoreCase) < 0)
+            if (grid.CurrentCell != null && !FilterPasses(grid.CurrentCell.RowIndex))
                 grid.CurrentCell = grid[0, 0];
             for (int r = RowCount - 1; r >= 0; r--) grid.Rows[r].Frozen = false;
             for (int c = ColumnCount - 1; c >= 0; c--) grid.Columns[c].Frozen = false;
             for (int r = 0; r < RowCount; r++)
             {
-                grid.Rows[r].Visible = !manualHiddenRows[r] && (filterColumn < 0 || r == 0 || r < freezeRow ||
-                    (Convert.ToString(grid[filterColumn, r].Value) ?? "").IndexOf(filterValue, StringComparison.CurrentCultureIgnoreCase) >= 0);
+                grid.Rows[r].Visible = !manualHiddenRows[r] && FilterPasses(r);
             }
             for (int r = 0; r < freezeRow && r < RowCount; r++) grid.Rows[r].Frozen = grid.Rows[r].Visible;
             for (int c = 0; c < freezeColumn && c < ColumnCount; c++) grid.Columns[c].Frozen = true;
@@ -619,27 +611,7 @@ namespace DinkCel
 
         private void FindReplace()
         {
-            string find = Prompt("Tìm", ""); if (string.IsNullOrEmpty(find)) return;
-            string replacement = Prompt("Thay bằng (Hủy để chỉ tìm)", "");
-            int start = grid.CurrentCell == null ? 0 : grid.CurrentCell.RowIndex * ColumnCount + grid.CurrentCell.ColumnIndex + 1;
-            int matches = 0;
-            if (replacement != null) loading = true;
-            try
-            {
-            for (int offset = 0; offset < RowCount * ColumnCount; offset++)
-            {
-                int key = (start + offset) % (RowCount * ColumnCount);
-                var cell = grid[key % ColumnCount, key / ColumnCount];
-                string raw = Convert.ToString(cell.Value) ?? "";
-                if (raw.IndexOf(find, StringComparison.CurrentCultureIgnoreCase) < 0) continue;
-                matches++;
-                if (replacement == null) { grid.CurrentCell = cell; cell.Selected = true; grid.FirstDisplayedScrollingRowIndex = cell.RowIndex; break; }
-                cell.Value = ReplaceIgnoreCase(raw, find, replacement);
-            }
-            }
-            finally { if (replacement != null) loading = false; }
-            if (replacement != null && matches > 0) { Recalculate(); RecordChange(); MarkDirty(); }
-            status.Text = "Tìm thấy " + matches + " ô";
+            OpenFindReplace();
         }
 
         private static string ReplaceIgnoreCase(string text, string find, string replacement)

@@ -547,7 +547,11 @@ namespace DinkCel
         {
             if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
             CellExtras extras = grid[e.ColumnIndex, e.RowIndex].Tag as CellExtras;
-            if (extras == null) return;
+            if (extras == null)
+            {
+                PaintDataBar(e);
+                return;
+            }
             Rectangle bounds = e.CellBounds;
             string text = Convert.ToString(grid[e.ColumnIndex, e.RowIndex].FormattedValue) ?? "";
             bool customText = extras.Rotation != 0 || extras.Shrink && !extras.Wrap;

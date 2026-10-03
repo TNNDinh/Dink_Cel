@@ -40,6 +40,21 @@ namespace DinkCel
             return text;
         }
 
+        private static Color XlsxRuleColor(string rgb)
+        {
+            return string.IsNullOrEmpty(rgb) || rgb.Length < 6 ? Color.LightGreen :
+                ColorTranslator.FromHtml("#" + rgb.Substring(rgb.Length - 6));
+        }
+
+        private static string ValidationFormula(string kind, string value)
+        {
+            if (kind != "Date" && kind != "Time") return value;
+            DateTime date;
+            if (!DataTools.Temporal(value, out date)) return value;
+            return (kind == "Time" ? date.TimeOfDay.TotalDays : date.ToOADate())
+                .ToString("0.##########", CultureInfo.InvariantCulture);
+        }
+
         private static int ColumnIndex(string address)
         {
             address = address.Replace("$", "");
@@ -210,38 +225,98 @@ namespace DinkCel
                             if (x < 0 || y < 0 || right >= columns || bottom >= rows) continue;
                             foreach (var rule in formatting.Elements(S + "cfRule"))
                             {
-                                if ((string)rule.Attribute("type") != "cellIs" || (string)rule.Attribute("operator") != "greaterThan") continue;
+                                string type = (string)rule.Attribute("type") ?? "";
+                                string op = (string)rule.Attribute("operator") ?? "";
                                 int dxf = (int?)rule.Attribute("dxfId") ?? -1;
+                                var formulas = rule.Elements(S + "formula").Select(v => v.Value).ToList();
+                                string kind = type == "cellIs" ? op == "greaterThan" ? "Greater" : op == "lessThan" ? "Less" :
+                                    op == "between" ? "Between" : op == "equal" ? "Equal" : "" :
+                                    type == "duplicateValues" ? "Duplicate" : type == "uniqueValues" ? "Unique" :
+                                    type == "containsText" ? "Text Contains" : type == "containsBlanks" ? "Blank" :
+                                    type == "expression" ? "Formula" : type == "colorScale" ? "Color Scale" :
+                                    type == "dataBar" ? "Data Bar" : type == "iconSet" ? "Icon Set" : "";
+                                if (kind.Length == 0) continue;
+                                var entry = new ConditionalRule { Range = new Rectangle(x, y, right - x + 1, bottom - y + 1),
+                                    Kind = kind, Value1 = formulas.Count > 0 ? formulas[0] : "",
+                                    Value2 = formulas.Count > 1 ? formulas[1] : "",
+                                    Color = dxf >= 0 && dxf < differentialColors.Count ? differentialColors[dxf] : Color.LightGreen };
+                                if (kind == "Formula" && !entry.Value1.StartsWith("=", StringComparison.Ordinal)) entry.Value1 = "=" + entry.Value1;
+                                if (kind == "Text Contains") entry.Value1 = (string)rule.Attribute("text") ?? entry.Value1;
+                                if (kind == "Color Scale")
+                                {
+                                    var colors = rule.Descendants(S + "color").Select(v => XlsxRuleColor((string)v.Attribute("rgb"))).ToList();
+                                    if (colors.Count > 0) entry.Color2 = colors[0];
+                                    if (colors.Count > 1) entry.Color = colors[colors.Count - 1];
+                                }
+                                if (kind == "Data Bar") entry.Color = XlsxRuleColor((string)rule.Descendants(S + "color").Select(v => v.Attribute("rgb")).FirstOrDefault());
                                 double threshold;
-                                if (dxf < 0 || dxf >= differentialColors.Count || differentialColors[dxf].IsEmpty ||
-                                    !double.TryParse((string)rule.Element(S + "formula"), NumberStyles.Float, CultureInfo.InvariantCulture, out threshold)) continue;
-                                sheet.Rules.Add(new ConditionalRule { Range = new Rectangle(x, y, right - x + 1, bottom - y + 1), Threshold = threshold, Color = differentialColors[dxf] });
+                                if (double.TryParse(entry.Value1, NumberStyles.Float, CultureInfo.InvariantCulture, out threshold)) entry.Threshold = threshold;
+                                sheet.Rules.Add(entry);
                             }
                         }
                     }
                     XElement filter = document.Descendants(S + "autoFilter").FirstOrDefault();
                     if (filter != null)
                     {
-                        XElement filterColumn = filter.Descendants(S + "filterColumn").FirstOrDefault();
-                        if (filterColumn != null)
+                        foreach (XElement filterColumn in filter.Descendants(S + "filterColumn"))
                         {
-                            sheet.FilterColumn = (int?)filterColumn.Attribute("colId") ?? -1;
-                            XElement custom = filterColumn.Descendants(S + "customFilter").FirstOrDefault();
-                            if (custom != null) sheet.FilterValue = ((string)custom.Attribute("val") ?? "").Trim('*');
+                            int column = (int?)filterColumn.Attribute("colId") ?? -1;
+                            if (column < 0 || column >= columns) continue;
+                            var customs = filterColumn.Descendants(S + "customFilter").ToList();
+                            if (customs.Count == 0) continue;
+                            string first = (string)customs[0].Attribute("val") ?? "";
+                            string op = (string)customs[0].Attribute("operator") ?? "equal";
+                            string kind = op == "greaterThan" || op == "lessThan" || op == "greaterThanOrEqual" || op == "lessThanOrEqual" ? "Number" : "Text";
+                            string mapped = op == "greaterThan" ? "Greater" : op == "lessThan" ? "Less" :
+                                op == "notEqual" && first.Length == 0 ? "Nonblank" :
+                                first.Length == 0 ? "Blank" : first.StartsWith("*") && first.EndsWith("*") ? "Contains" :
+                                first.EndsWith("*") ? "Begins With" : "Equals";
+                            if (customs.Count > 1) mapped = "Between";
+                            sheet.Filters.Add(new FilterCriterion { Column = column, Kind = kind, Operator = mapped,
+                                Value1 = first.Trim('*'), Value2 = customs.Count > 1 ? ((string)customs[1].Attribute("val") ?? "").Trim('*') : "" });
+                            if (sheet.FilterColumn < 0)
+                            { sheet.FilterColumn = column; sheet.FilterValue = first.Trim('*'); }
                         }
                     }
                     foreach (var validation in document.Descendants(S + "dataValidation"))
                     {
-                        if ((string)validation.Attribute("type") != "list") continue;
+                        string type = (string)validation.Attribute("type") ?? "";
+                        string kind = type == "list" ? "List" : type == "whole" ? "Whole Number" :
+                            type == "decimal" ? "Decimal" : type == "date" ? "Date" : type == "time" ? "Time" :
+                            type == "textLength" ? "Text Length" : type == "custom" ? "Custom Formula" : "";
+                        if (kind.Length == 0) continue;
                         string formula = (string)validation.Element(S + "formula1") ?? "";
-                        if (!formula.StartsWith("\"", StringComparison.Ordinal) || !formula.EndsWith("\"", StringComparison.Ordinal)) continue;
-                        string[] choices = formula.Substring(1, formula.Length - 2).Replace("\"\"", "\"").Split(',');
+                        string[] choices = kind == "List" && formula.StartsWith("\"", StringComparison.Ordinal) && formula.EndsWith("\"", StringComparison.Ordinal) ?
+                            formula.Substring(1, formula.Length - 2).Replace("\"\"", "\"").Split(',') : new string[0];
+                        if (kind == "List" && choices.Length == 0)
+                        {
+                            Rectangle source = ParseArea(formula.TrimStart('='), rows, columns);
+                            if (!source.IsEmpty)
+                                choices = Enumerable.Range(source.Top, source.Height)
+                                    .SelectMany(r => Enumerable.Range(source.Left, source.Width)
+                                        .Select(c => { CellSnapshot item; return sheet.Cells.TryGetValue(r * columns + c, out item) ? item.Text : ""; }))
+                                    .Where(v => v.Length > 0).ToArray();
+                        }
                         string sqref = (string)validation.Attribute("sqref") ?? "";
                         foreach (string area in sqref.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
                         {
                             Rectangle range = ParseArea(area, rows, columns);
                             if (range.IsEmpty) continue;
-                            var rule = new ValidationRule { Range = range };
+                            string operation = (string)validation.Attribute("operator") ?? "between";
+                            var rule = new ValidationRule { Range = range, Kind = kind,
+                                Operator = operation == "notBetween" ? "Not Between" : operation == "equal" ? "Equals" :
+                                    operation == "notEqual" ? "Not Equals" : operation == "greaterThan" ? "Greater" :
+                                    operation == "greaterThanOrEqual" ? "Greater Or Equal" : operation == "lessThan" ? "Less" :
+                                    operation == "lessThanOrEqual" ? "Less Or Equal" : "Between",
+                                Value1 = kind == "Custom Formula" ? "=" + formula.TrimStart('=') : formula,
+                                Value2 = (string)validation.Element(S + "formula2") ?? "",
+                                AllowBlank = (bool?)validation.Attribute("allowBlank") ?? true,
+                                InputTitle = (string)validation.Attribute("promptTitle") ?? "",
+                                InputMessage = (string)validation.Attribute("prompt") ?? "",
+                                ErrorTitle = (string)validation.Attribute("errorTitle") ?? "",
+                                ErrorMessage = (string)validation.Attribute("error") ?? "",
+                                ErrorStyle = (string)validation.Attribute("errorStyle") == "warning" ? "Warning" :
+                                    (string)validation.Attribute("errorStyle") == "information" ? "Information" : "Stop" };
                             rule.Choices.AddRange(choices);
                             sheet.Validations.Add(rule);
                         }
@@ -465,11 +540,31 @@ namespace DinkCel
                 data.Add(row);
             }
             root.Add(data);
-            if (sheet.FilterColumn >= 0 && sheet.FilterColumn < columns)
-                root.Add(new XElement(S + "autoFilter", new XAttribute("ref", "A1:" + ColumnName(columns - 1) + rows),
-                    new XElement(S + "filterColumn", new XAttribute("colId", sheet.FilterColumn),
-                        new XElement(S + "customFilters", new XElement(S + "customFilter",
-                            new XAttribute("operator", "equal"), new XAttribute("val", "*" + sheet.FilterValue + "*"))))));
+            var filterRules = new List<FilterCriterion>(sheet.Filters);
+            if (sheet.FilterColumn >= 0 && sheet.FilterColumn < columns &&
+                !filterRules.Any(f => f.Column == sheet.FilterColumn))
+                filterRules.Add(new FilterCriterion { Column = sheet.FilterColumn, Operator = "Contains", Value1 = sheet.FilterValue });
+            if (filterRules.Count > 0)
+            {
+                var filterElement = new XElement(S + "autoFilter", new XAttribute("ref", "A1:" + ColumnName(columns - 1) + rows));
+                foreach (FilterCriterion criterion in filterRules.Where(f => f.Column >= 0 && f.Column < columns))
+                {
+                    string operation = criterion.Operator == "Greater" ? "greaterThan" : criterion.Operator == "Less" ? "lessThan" :
+                        criterion.Operator == "Nonblank" ? "notEqual" : "equal";
+                    string value = criterion.Operator == "Contains" ? "*" + criterion.Value1 + "*" :
+                        criterion.Operator == "Begins With" ? criterion.Value1 + "*" :
+                        criterion.Operator == "Blank" || criterion.Operator == "Nonblank" ? "" : criterion.Value1;
+                    var customs = new XElement(S + "customFilters",
+                        new XElement(S + "customFilter", new XAttribute("operator", criterion.Operator == "Between" ? "greaterThanOrEqual" : operation), new XAttribute("val", value)));
+                    if (criterion.Operator == "Between")
+                    {
+                        customs.SetAttributeValue("and", 1);
+                        customs.Add(new XElement(S + "customFilter", new XAttribute("operator", "lessThanOrEqual"), new XAttribute("val", criterion.Value2)));
+                    }
+                    filterElement.Add(new XElement(S + "filterColumn", new XAttribute("colId", criterion.Column), customs));
+                }
+                root.Add(filterElement);
+            }
             if (sheet.Merges.Count > 0)
             {
                 var merges = new XElement(S + "mergeCells", new XAttribute("count", sheet.Merges.Count));
@@ -482,10 +577,42 @@ namespace DinkCel
                 Rectangle rect = rule.Range;
                 if (rect.X < 0 || rect.Y < 0 || rect.Right > columns || rect.Bottom > rows) continue;
                 string reference = ColumnName(rect.X) + (rect.Y + 1) + ":" + ColumnName(rect.Right - 1) + rect.Bottom;
-                root.Add(new XElement(S + "conditionalFormatting", new XAttribute("sqref", reference),
-                    new XElement(S + "cfRule", new XAttribute("type", "cellIs"), new XAttribute("operator", "greaterThan"),
-                        new XAttribute("dxfId", styles.DifferentialIndex(rule.Color)), new XAttribute("priority", priority++),
-                        new XElement(S + "formula", rule.Threshold.ToString(CultureInfo.InvariantCulture)))));
+                string type = rule.Kind == "Duplicate" ? "duplicateValues" : rule.Kind == "Unique" ? "uniqueValues" :
+                    rule.Kind == "Text Contains" ? "containsText" : rule.Kind == "Blank" ? "containsBlanks" :
+                    rule.Kind == "Formula" ? "expression" : rule.Kind == "Color Scale" ? "colorScale" :
+                    rule.Kind == "Data Bar" ? "dataBar" : rule.Kind == "Icon Set" ? "iconSet" : "cellIs";
+                var entry = new XElement(S + "cfRule", new XAttribute("type", type), new XAttribute("priority", priority++));
+                if (type == "cellIs")
+                {
+                    entry.SetAttributeValue("operator", rule.Kind == "Less" ? "lessThan" : rule.Kind == "Equal" ? "equal" :
+                        rule.Kind == "Between" ? "between" : "greaterThan");
+                    entry.Add(new XElement(S + "formula", string.IsNullOrEmpty(rule.Value1) ?
+                        rule.Threshold.ToString(CultureInfo.InvariantCulture) : rule.Value1));
+                    if (rule.Kind == "Between") entry.Add(new XElement(S + "formula", rule.Value2));
+                }
+                else if (type == "expression") entry.Add(new XElement(S + "formula", rule.Value1.TrimStart('=')));
+                else if (type == "containsText")
+                {
+                    entry.SetAttributeValue("text", rule.Value1);
+                    entry.Add(new XElement(S + "formula", "NOT(ISERROR(SEARCH(\"" + rule.Value1.Replace("\"", "\"\"") + "\"," + ColumnName(rect.X) + (rect.Y + 1) + ")))") );
+                }
+                if (type == "colorScale")
+                    entry.Add(new XElement(S + "colorScale",
+                        new XElement(S + "cfvo", new XAttribute("type", "min")),
+                        new XElement(S + "cfvo", new XAttribute("type", "max")),
+                        new XElement(S + "color", new XAttribute("rgb", (rule.Color2.IsEmpty ? Color.White : rule.Color2).ToArgb().ToString("X8", CultureInfo.InvariantCulture))),
+                        new XElement(S + "color", new XAttribute("rgb", rule.Color.ToArgb().ToString("X8", CultureInfo.InvariantCulture)))));
+                if (type == "dataBar") entry.Add(new XElement(S + "dataBar",
+                    new XElement(S + "cfvo", new XAttribute("type", "min")),
+                    new XElement(S + "cfvo", new XAttribute("type", "max")),
+                    new XElement(S + "color", new XAttribute("rgb", rule.Color.ToArgb().ToString("X8", CultureInfo.InvariantCulture)))));
+                if (type == "iconSet") entry.Add(new XElement(S + "iconSet", new XAttribute("iconSet", "3TrafficLights1"),
+                    new XElement(S + "cfvo", new XAttribute("type", "percent"), new XAttribute("val", 0)),
+                    new XElement(S + "cfvo", new XAttribute("type", "percent"), new XAttribute("val", 33)),
+                    new XElement(S + "cfvo", new XAttribute("type", "percent"), new XAttribute("val", 67))));
+                if (type != "colorScale" && type != "dataBar" && type != "iconSet")
+                    entry.SetAttributeValue("dxfId", styles.DifferentialIndex(rule.Color));
+                root.Add(new XElement(S + "conditionalFormatting", new XAttribute("sqref", reference), entry));
             }
             if (sheet.Validations.Count > 0)
             {
@@ -494,11 +621,27 @@ namespace DinkCel
                 {
                     if (rule.Range.IsEmpty || rule.Range.Right > columns || rule.Range.Bottom > rows) continue;
                     string csv = string.Join(",", rule.Choices.ToArray()).Replace("\"", "\"\"");
-                    if (csv.Length > 250) continue;
-                    entries.Add(new XElement(S + "dataValidation", new XAttribute("type", "list"),
-                        new XAttribute("allowBlank", 1), new XAttribute("showDropDown", 0),
-                        new XAttribute("sqref", RangeAddress(rule.Range)),
-                        new XElement(S + "formula1", "\"" + csv + "\"")));
+                    if (rule.Kind == "List" && csv.Length > 250) continue;
+                    string type = rule.Kind == "Whole Number" ? "whole" : rule.Kind == "Decimal" ? "decimal" :
+                        rule.Kind == "Date" ? "date" : rule.Kind == "Time" ? "time" :
+                        rule.Kind == "Text Length" ? "textLength" : rule.Kind == "Custom Formula" ? "custom" : "list";
+                    string operation = rule.Operator == "Not Between" ? "notBetween" : rule.Operator == "Equals" ? "equal" :
+                        rule.Operator == "Not Equals" ? "notEqual" : rule.Operator == "Greater" ? "greaterThan" :
+                        rule.Operator == "Greater Or Equal" ? "greaterThanOrEqual" : rule.Operator == "Less" ? "lessThan" :
+                        rule.Operator == "Less Or Equal" ? "lessThanOrEqual" : "between";
+                    var entry = new XElement(S + "dataValidation", new XAttribute("type", type),
+                        new XAttribute("allowBlank", rule.AllowBlank ? 1 : 0), new XAttribute("showDropDown", 0),
+                        new XAttribute("sqref", RangeAddress(rule.Range)));
+                    if (type != "list" && type != "custom") entry.SetAttributeValue("operator", operation);
+                    if (!string.IsNullOrEmpty(rule.InputTitle) || !string.IsNullOrEmpty(rule.InputMessage))
+                    { entry.SetAttributeValue("showInputMessage", 1); entry.SetAttributeValue("promptTitle", rule.InputTitle); entry.SetAttributeValue("prompt", rule.InputMessage); }
+                    if (!string.IsNullOrEmpty(rule.ErrorTitle) || !string.IsNullOrEmpty(rule.ErrorMessage))
+                    { entry.SetAttributeValue("showErrorMessage", 1); entry.SetAttributeValue("errorTitle", rule.ErrorTitle); entry.SetAttributeValue("error", rule.ErrorMessage); }
+                    entry.SetAttributeValue("errorStyle", rule.ErrorStyle == "Warning" ? "warning" : rule.ErrorStyle == "Information" ? "information" : "stop");
+                    entry.Add(new XElement(S + "formula1", type == "list" ? "\"" + csv + "\"" :
+                        type == "custom" ? rule.Value1.TrimStart('=') : ValidationFormula(rule.Kind, rule.Value1)));
+                    if (rule.Value2.Length > 0 && type != "list" && type != "custom") entry.Add(new XElement(S + "formula2", ValidationFormula(rule.Kind, rule.Value2)));
+                    entries.Add(entry);
                 }
                 entries.SetAttributeValue("count", entries.Elements().Count());
                 if (entries.HasElements) root.Add(entries);

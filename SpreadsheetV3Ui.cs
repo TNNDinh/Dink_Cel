@@ -124,14 +124,32 @@ namespace DinkCel
         private bool CanAcceptValue(int row, int column, string value)
         {
             ValidationRule rule = ValidationFor(row, column);
-            return rule == null || string.IsNullOrEmpty(value) ||
-                rule.Choices.Any(option => string.Equals(option, value, StringComparison.CurrentCultureIgnoreCase));
+            if (rule == null) return true;
+            if (rule.Kind == "Custom Formula")
+                return string.IsNullOrEmpty(value) ? rule.AllowBlank :
+                    EvaluateRuleFormula(rule.Value1, row, column, value, rule.Range.Top, rule.Range.Left);
+            string checkedValue = value != null && value.StartsWith("=", StringComparison.Ordinal) ?
+                EvaluateAt(value, row, column, value) : value;
+            return DataTools.Valid(rule, checkedValue);
         }
 
         private bool ValidateCellChange(int row, int column)
         {
             string value = Convert.ToString(grid[column, row].Value) ?? "";
             if (CanAcceptValue(row, column, value)) return true;
+            ValidationRule rule = ValidationFor(row, column);
+            string alert = string.IsNullOrEmpty(rule.ErrorMessage) ?
+                "Giá trị không đạt điều kiện kiểm tra dữ liệu." : rule.ErrorMessage;
+            if (rule.ErrorStyle == "Information")
+            {
+                MessageBox.Show(this, alert, string.IsNullOrEmpty(rule.ErrorTitle) ? "DinkCel" : rule.ErrorTitle,
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return true;
+            }
+            if (rule.ErrorStyle == "Warning" &&
+                MessageBox.Show(this, alert + "\nVẫn giữ giá trị này?",
+                    string.IsNullOrEmpty(rule.ErrorTitle) ? "DinkCel" : rule.ErrorTitle,
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) return true;
             CellState old;
             object previous = lastState != null && lastState.Cells.TryGetValue(row * ColumnCount + column, out old)
                 ? old.Value : null;
@@ -141,14 +159,14 @@ namespace DinkCel
             syncingContent = true;
             contentBox.Text = Convert.ToString(previous) ?? "";
             syncingContent = false;
-            status.Text = "Giá trị không có trong danh sách chọn";
+            status.Text = alert;
             return false;
         }
 
         private void ShowValidationDropdown(int row, int column)
         {
             ValidationRule rule = ValidationFor(row, column);
-            if (rule == null || row < 0 || column < 0) return;
+            if (rule == null || rule.Kind != "List" || row < 0 || column < 0) return;
             if (validationEditor != null)
             { grid.Controls.Remove(validationEditor); validationEditor.Dispose(); validationEditor = null; }
             Rectangle bounds = grid.GetCellDisplayRectangle(column, row, true);

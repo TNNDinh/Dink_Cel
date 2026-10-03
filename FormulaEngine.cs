@@ -135,6 +135,19 @@ namespace DinkCel
             return result.Text;
         }
 
+        public string EvaluateExpression(string expression)
+        {
+            try
+            {
+                Value result = new Parser(this, (expression ?? "").TrimStart('='), currentSheet).Parse().Evaluate(this);
+                if (result.Kind == ValueKind.Number) return result.Number.ToString("0.##########", CultureInfo.InvariantCulture);
+                if (result.Kind == ValueKind.Blank) return "0";
+                if (result.Kind == ValueKind.Range) return "#VALUE!";
+                return result.Text;
+            }
+            catch (Exception) { return "#VALUE!"; }
+        }
+
         private Value EvaluateCell(int row, int column)
         {
             return EvaluateCell(currentSheet, row, column);
