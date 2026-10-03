@@ -12,7 +12,14 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.7.1 — Data Tools
+## Tính năng v0.8.0 — Table & Pivot
+
+- **Table:** chọn vùng dữ liệu rồi dùng menu **Dữ liệu > Tạo Table**. Có tên riêng, kiểu màu, hàng tiêu đề, hàng tổng, sọc hàng/cột, bộ lọc tại tiêu đề, tự mở rộng khi nhập thêm và cột công thức. Công thức hỗ trợ `=SUM(Table1[Doanh thu])` và `=[@Doanh thu]`; đổi tên Table cập nhật các công thức liên quan.
+- **Pivot:** cấu hình tối đa ba trường Rows, hai Columns, ba Values và hai Filters. Hỗ trợ Sum, Count, Average, Min, Max, tổng cuối, tổng nhóm, sắp xếp, lọc, thu gọn/mở rộng nhóm, làm mới và nhóm ngày theo ngày/tháng/năm. Pivot lấy nguồn từ Table sẽ theo vùng dữ liệu mới sau khi Table mở rộng.
+- **Dữ liệu lớn:** lưới mở rộng dần tới 50.000 hàng × 26 cột; đã kiểm tra nhập 20.000 dòng CSV, sửa, tổng hợp Pivot và lưu `.xlsx`.
+- **Lưu tệp:** `.dinkcel` giữ cấu hình Table và Pivot để chỉnh tiếp. `.xlsx` ghi Excel Table và xuất kết quả Pivot thành sheet tổng hợp; chưa tạo Pivot cache gốc của Excel.
+
+### Tính năng từ v0.7.1 — Data Tools
 
 - **Sort:** tăng/giảm dần và sắp xếp tối đa ba cấp theo chữ, số, ngày hoặc màu nền ô. Giữ nguyên nội dung, kiểu và dữ liệu phụ của ô khi đổi hàng; hàng tiêu đề đầu tiên được giữ lại.
 - **Filter:** lọc nhiều cột theo chữ, số hoặc ngày; hỗ trợ Contains, Begins With, Equals, Greater, Less, Between, Blank và Nonblank. Có thể bỏ toàn bộ bộ lọc từ menu **Dữ liệu**.
@@ -67,7 +74,7 @@ Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy bu
 - Nhiều sheet; mở/lưu `.xlsx`; sắp xếp, lọc, tìm/thay thế; định dạng số, merge, AutoFit, freeze panes, conditional formatting và Paste Special.
 - Các hàm số, văn bản, điều kiện và thống kê cơ bản; công thức liên sheet.
 
-**Giới hạn:** mỗi sheet có 200 hàng × 26 cột. File có dữ liệu ngoài vùng này sẽ báo lỗi khi mở. CSV chỉ lưu một sheet và nội dung ô. Pivot là sheet tổng hợp phải làm mới bằng lệnh, chưa phải Pivot Table gốc của Excel. `.xls` và `.ods` tập trung vào dữ liệu, công thức, nhiều sheet, merge và named ranges; các thành phần nâng cao và một số kiểu định dạng có thể không được giữ khi lưu lại. Bản in và PDF chưa có biểu đồ. Với file có macro hoặc tính năng Excel nâng cao, hãy giữ bản gốc trước khi chỉnh sửa và lưu lại.
+**Giới hạn:** mỗi sheet có tối đa 50.000 hàng × 26 cột. File có dữ liệu ngoài vùng này sẽ báo lỗi khi mở. CSV chỉ lưu một sheet và nội dung ô. Pivot trong `.xlsx` là sheet tổng hợp và cần làm mới trong DinkCel; chưa phải Pivot Table gốc của Excel. `.xls` và `.ods` tập trung vào dữ liệu, công thức, nhiều sheet, merge và named ranges; các thành phần nâng cao và một số kiểu định dạng có thể không được giữ khi lưu lại. Bản in và PDF chưa có biểu đồ. Với file có macro hoặc tính năng Excel nâng cao, hãy giữ bản gốc trước khi chỉnh sửa và lưu lại.
 
 ### Tính năng từ v0.1.1
 

@@ -13,6 +13,7 @@ namespace DinkCel
 {
     internal sealed partial class SpreadsheetForm
     {
+        private bool viewRestricted;
         private void AddSpreadsheetMenus()
         {
             var sheet = new ToolStripMenuItem("Trang tính");
@@ -33,10 +34,16 @@ namespace DinkCel
             AddMenuItem(data, "Tìm...", Keys.Control | Keys.F, FindReplace);
             AddMenuItem(data, "Tìm và thay thế...", Keys.Control | Keys.H, FindReplace);
             AddMenuItem(data, "Tạo Pivot Table...", Keys.None, CreatePivot);
+            AddMenuItem(data, "Thiết lập Pivot Table...", Keys.None, EditCurrentPivot);
+            AddMenuItem(data, "Mở rộng / thu gọn nhóm Pivot", Keys.None, TogglePivotGroup);
             AddMenuItem(data, "Làm mới Pivot Table", Keys.None, RefreshAllPivots);
             menu.Items.Add(data);
             var insert = new ToolStripMenuItem("Chèn");
             AddMenuItem(insert, "Tạo Table từ vùng chọn...", Keys.None, CreateTable);
+            AddMenuItem(insert, "Thiết lập Table...", Keys.None, ConfigureTable);
+            AddMenuItem(insert, "Cột tính Table...", Keys.None, SetCalculatedColumn);
+            AddMenuItem(insert, "Lọc Table...", Keys.None, SetTableFilter);
+            AddMenuItem(insert, "Bỏ lọc Table", Keys.None, ClearTableFilter);
             AddMenuItem(insert, "Biểu đồ từ vùng chọn...", Keys.None, CreateChart);
             AddMenuItem(insert, "Xem biểu đồ...", Keys.None, OpenChart);
             AddMenuItem(insert, "Danh sách chọn cho ô...", Keys.None, AddDropdown);
@@ -219,7 +226,7 @@ namespace DinkCel
                     Extras = CellExtras.Copy(pair.Value.Extras) });
             copy.Merges.AddRange(source.Merges);
             copy.Rules.AddRange(source.Rules);
-            copy.Tables.AddRange(source.Tables);
+            copy.Tables.AddRange(source.Tables.Select(t => t.Copy()));
             copy.Charts.AddRange(source.Charts);
             copy.Validations.AddRange(source.Validations);
             sheets.Insert(index + 1, copy);
@@ -318,9 +325,17 @@ namespace DinkCel
                 if (string.Equals(pivot.TargetSheet, oldName, StringComparison.OrdinalIgnoreCase)) pivot.TargetSheet = name;
             }
             foreach (SheetState sheet in sheets)
-                foreach (CellState cell in sheet.Cells.Values)
+                foreach (int key in sheet.Cells.Keys.ToArray())
+                {
+                    CellState cell = sheet.Cells[key];
                     if (cell.Value is string)
-                        cell.Value = RenameSheetReferences((string)cell.Value, oldName, name);
+                    {
+                        string renamed = RenameSheetReferences((string)cell.Value, oldName, name);
+                        if (renamed != (string)cell.Value)
+                            sheet.Cells[key] = new CellState { Value = renamed, Style = cell.Style,
+                                Extras = CellExtras.Copy(cell.Extras) };
+                    }
+                }
             loading = true;
             try
             {
@@ -419,10 +434,10 @@ namespace DinkCel
             state.Merges.AddRange(source.Merges);
             state.Rules.AddRange(source.Rules);
             state.Filters.AddRange(source.Filters);
-            state.Tables.AddRange(source.Tables);
+            state.Tables.AddRange(source.Tables.Select(t => t.Copy()));
             state.Charts.AddRange(source.Charts);
             state.Validations.AddRange(source.Validations);
-            for (int r = 0; r < RowCount; r++) state.RowHeights[r] = source.RowHeights.ContainsKey(r) ? source.RowHeights[r] : 27;
+            for (int r = 0; r < MaxRowCount; r++) state.RowHeights[r] = source.RowHeights.ContainsKey(r) ? source.RowHeights[r] : 27;
             for (int c = 0; c < ColumnCount; c++) state.ColumnWidths[c] = source.ColumnWidths.ContainsKey(c) ? source.ColumnWidths[c] : 120;
             foreach (int row in source.HiddenRows) state.HiddenRows[row] = true;
             foreach (int column in source.HiddenColumns) state.HiddenColumns[column] = true;
@@ -455,7 +470,7 @@ namespace DinkCel
             result.Merges.AddRange(source.Merges);
             result.Rules.AddRange(source.Rules);
             result.Filters.AddRange(source.Filters);
-            result.Tables.AddRange(source.Tables);
+            result.Tables.AddRange(source.Tables.Select(t => t.Copy()));
             result.Charts.AddRange(source.Charts);
             result.Validations.AddRange(source.Validations);
             for (int r = 0; r < RowCount; r++) if (source.RowHeights[r] != 27) result.RowHeights[r] = source.RowHeights[r];
@@ -597,16 +612,24 @@ namespace DinkCel
         private void ApplyFreezeAndFilter()
         {
             if (filterColumn >= ColumnCount || filterColumn < -1) filterColumn = -1;
+            bool restricted = filterColumn >= 0 || activeFilters.Count > 0 ||
+                tables.Any(t => t.Filter && t.Filters.Count > 0) || freezeRow > 0 || freezeColumn > 0 ||
+                manualHiddenRows.Take(RowCount).Any(hidden => hidden);
+            if (!restricted && !viewRestricted) return;
             if (grid.CurrentCell != null && !FilterPasses(grid.CurrentCell.RowIndex))
                 grid.CurrentCell = grid[0, 0];
-            for (int r = RowCount - 1; r >= 0; r--) grid.Rows[r].Frozen = false;
+            for (int r = RowCount - 1; r >= 0; r--)
+                if ((grid.Rows.GetRowState(r) & DataGridViewElementStates.Frozen) != 0) grid.Rows[r].Frozen = false;
             for (int c = ColumnCount - 1; c >= 0; c--) grid.Columns[c].Frozen = false;
             for (int r = 0; r < RowCount; r++)
             {
-                grid.Rows[r].Visible = !manualHiddenRows[r] && FilterPasses(r);
+                bool visible = !manualHiddenRows[r] && FilterPasses(r);
+                if (((grid.Rows.GetRowState(r) & DataGridViewElementStates.Visible) != 0) != visible)
+                    grid.Rows[r].Visible = visible;
             }
             for (int r = 0; r < freezeRow && r < RowCount; r++) grid.Rows[r].Frozen = grid.Rows[r].Visible;
             for (int c = 0; c < freezeColumn && c < ColumnCount; c++) grid.Columns[c].Frozen = true;
+            viewRestricted = restricted;
         }
 
         private void FindReplace()

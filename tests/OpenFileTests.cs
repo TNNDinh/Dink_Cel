@@ -142,7 +142,7 @@ namespace DinkCel
                     Equal("=$B$2", grid[3, 0].Value);
                     Equal(151, grid.Columns[1].Width);
                     Call(form, "SelectHeader", 1, false);
-                    Equal(200, grid.SelectedCells.Count);
+                    Equal(grid.RowCount, grid.SelectedCells.Count);
                     Call(form, "InsertColumn");
                     Equal(null, grid[1, 1].Value);
                     Equal("42", grid[2, 1].Value);

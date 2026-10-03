@@ -174,7 +174,7 @@ namespace DinkCel
                             string address = (string)cell.Attribute("r") ?? "";
                             int col = ColumnIndex(address), line = RowIndex(address);
                             if (col < 0 || col >= columns || line < 0 || line >= rows)
-                                throw new InvalidDataException("XLSX contains cells outside the 200 x 26 grid: " + address);
+                                throw new InvalidDataException("XLSX contains cells outside the 50,000 x 26 grid: " + address);
                             string type = (string)cell.Attribute("t") ?? "";
                             string value = (string)cell.Element(S + "v") ?? "";
                             if (type == "s") { int index; if (int.TryParse(value, out index) && index >= 0 && index < strings.Count) value = strings[index]; }
@@ -263,6 +263,21 @@ namespace DinkCel
                             int column = (int?)filterColumn.Attribute("colId") ?? -1;
                             if (column < 0 || column >= columns) continue;
                             var customs = filterColumn.Descendants(S + "customFilter").ToList();
+                            if (customs.Count == 0)
+                            {
+                                XElement choicesRoot = filterColumn.Element(S + "filters");
+                                if (choicesRoot != null)
+                                {
+                                    var choices = choicesRoot.Elements(S + "filter").Select(v => (string)v.Attribute("val") ?? "").ToList();
+                                    if ((bool?)choicesRoot.Attribute("blank") == true) choices.Add("");
+                                    if (choices.Count > 0)
+                                    {
+                                        sheet.Filters.Add(new FilterCriterion { Column = column, Operator = "One Of",
+                                            Value1 = string.Join("\n", choices.ToArray()) });
+                                        if (sheet.FilterColumn < 0) sheet.FilterColumn = column;
+                                    }
+                                }
+                            }
                             if (customs.Count == 0) continue;
                             string first = (string)customs[0].Attribute("val") ?? "";
                             string op = (string)customs[0].Attribute("operator") ?? "equal";
@@ -336,9 +351,56 @@ namespace DinkCel
                             if (!tablePaths.ContainsKey(tableId) || zip.GetEntry(tablePaths[tableId]) == null) continue;
                             XElement tableDefinition = ReadXml(zip, tablePaths[tableId]).Root;
                             Rectangle range = ParseArea((string)tableDefinition.Attribute("ref") ?? "", rows, columns);
-                            if (!range.IsEmpty) sheet.Tables.Add(new TableDefinition
-                            { Name = (string)tableDefinition.Attribute("displayName") ??
-                                (string)tableDefinition.Attribute("name") ?? "Table", Range = range });
+                            if (!range.IsEmpty)
+                            {
+                                XElement style = tableDefinition.Element(S + "tableStyleInfo");
+                                var table = new TableDefinition
+                                { Name = (string)tableDefinition.Attribute("displayName") ??
+                                    (string)tableDefinition.Attribute("name") ?? "Table", Range = range,
+                                    HeaderRow = ((int?)tableDefinition.Attribute("headerRowCount") ?? 1) != 0,
+                                    TotalRow = ((int?)tableDefinition.Attribute("totalsRowCount") ?? 0) != 0,
+                                    Style = (string)(style == null ? null : style.Attribute("name")) ?? "TableStyleMedium2",
+                                    BandedRows = (bool?)(style == null ? null : style.Attribute("showRowStripes")) ?? true,
+                                    BandedColumns = (bool?)(style == null ? null : style.Attribute("showColumnStripes")) ?? false,
+                                    Filter = tableDefinition.Element(S + "autoFilter") != null };
+                                int field = range.Left;
+                                foreach (XElement column in tableDefinition.Descendants(S + "tableColumn"))
+                                {
+                                    string formula = (string)column.Element(S + "calculatedColumnFormula") ?? "";
+                                    if (formula.Length > 0) table.CalculatedColumns[field] = "=" + formula.TrimStart('=');
+                                    field++;
+                                }
+                                foreach (XElement filterColumn in tableDefinition.Descendants(S + "filterColumn"))
+                                {
+                                    int column = range.Left + ((int?)filterColumn.Attribute("colId") ?? -1);
+                                    if (column < range.Left || column >= range.Right) continue;
+                                    var customs = filterColumn.Descendants(S + "customFilter").ToList();
+                                    if (customs.Count == 0)
+                                    {
+                                        XElement choicesRoot = filterColumn.Element(S + "filters");
+                                        if (choicesRoot != null)
+                                        {
+                                            var choices = choicesRoot.Elements(S + "filter").Select(v => (string)v.Attribute("val") ?? "").ToList();
+                                            if ((bool?)choicesRoot.Attribute("blank") == true) choices.Add("");
+                                            if (choices.Count > 0) table.Filters.Add(new FilterCriterion { Column = column,
+                                                Operator = "One Of", Value1 = string.Join("\n", choices.ToArray()) });
+                                        }
+                                    }
+                                    if (customs.Count == 0) continue;
+                                    string value = (string)customs[0].Attribute("val") ?? "";
+                                    string op = (string)customs[0].Attribute("operator") ?? "equal";
+                                    string mapped = customs.Count > 1 ? "Between" : op == "greaterThan" ? "Greater" :
+                                        op == "lessThan" ? "Less" : op == "notEqual" && value.Length == 0 ? "Nonblank" :
+                                        value.Length == 0 ? "Blank" : value.StartsWith("*") && value.EndsWith("*") ? "Contains" :
+                                        value.EndsWith("*") ? "Begins With" : "Equals";
+                                    table.Filters.Add(new FilterCriterion { Column = column,
+                                        Kind = op == "greaterThan" || op == "lessThan" || op == "greaterThanOrEqual" ||
+                                            op == "lessThanOrEqual" ? "Number" : "Text",
+                                        Operator = mapped, Value1 = value.Trim('*'),
+                                        Value2 = customs.Count > 1 ? (string)customs[1].Attribute("val") ?? "" : "" });
+                                }
+                                sheet.Tables.Add(table);
+                            }
                         }
                         var drawingPaths = sheetRels.Root.Elements(P + "Relationship")
                             .Where(x => ((string)x.Attribute("Type") ?? "").EndsWith("/drawing", StringComparison.Ordinal))
@@ -514,9 +576,12 @@ namespace DinkCel
                 root.Add(cols);
             }
             var data = new XElement(S + "sheetData");
+            var rowCells = sheet.Cells.GroupBy(x => x.Key / columns)
+                .ToDictionary(group => group.Key, group => group.OrderBy(x => x.Key).ToList());
             for (int r = 0; r < rows; r++)
             {
-                var entries = sheet.Cells.Where(x => x.Key / columns == r).OrderBy(x => x.Key).ToList();
+                List<KeyValuePair<int, CellSnapshot>> entries;
+                if (!rowCells.TryGetValue(r, out entries)) entries = new List<KeyValuePair<int, CellSnapshot>>();
                 if (entries.Count == 0 && !sheet.RowHeights.ContainsKey(r) && !sheet.HiddenRows.Contains(r)) continue;
                 var row = new XElement(S + "row", new XAttribute("r", r + 1));
                 if (sheet.HiddenRows.Contains(r)) row.SetAttributeValue("hidden", 1);
@@ -549,6 +614,15 @@ namespace DinkCel
                 var filterElement = new XElement(S + "autoFilter", new XAttribute("ref", "A1:" + ColumnName(columns - 1) + rows));
                 foreach (FilterCriterion criterion in filterRules.Where(f => f.Column >= 0 && f.Column < columns))
                 {
+                    if (criterion.Operator == "One Of")
+                    {
+                        var choices = criterion.Value1.Split('\n').Select(v => v.TrimEnd('\r')).ToList();
+                        var selected = new XElement(S + "filters");
+                        if (choices.Remove("")) selected.SetAttributeValue("blank", 1);
+                        foreach (string choice in choices) selected.Add(new XElement(S + "filter", new XAttribute("val", choice)));
+                        filterElement.Add(new XElement(S + "filterColumn", new XAttribute("colId", criterion.Column), selected));
+                        continue;
+                    }
                     string operation = criterion.Operator == "Greater" ? "greaterThan" : criterion.Operator == "Less" ? "lessThan" :
                         criterion.Operator == "Nonblank" ? "notEqual" : "equal";
                     string value = criterion.Operator == "Contains" ? "*" + criterion.Value1 + "*" :
@@ -659,22 +733,58 @@ namespace DinkCel
 
         private static XDocument BuildTable(TableDefinition table, SheetSnapshot sheet, int id, int columns)
         {
+            var autoFilter = new XElement(S + "autoFilter", new XAttribute("ref", RangeAddress(table.Range)));
+            foreach (FilterCriterion criterion in table.Filters)
+            {
+                if (criterion.Column < table.Range.Left || criterion.Column >= table.Range.Right) continue;
+                if (criterion.Operator == "One Of")
+                {
+                    var choices = criterion.Value1.Split('\n').Select(v => v.TrimEnd('\r')).ToList();
+                    var selected = new XElement(S + "filters");
+                    if (choices.Remove("")) selected.SetAttributeValue("blank", 1);
+                    foreach (string choice in choices) selected.Add(new XElement(S + "filter", new XAttribute("val", choice)));
+                    autoFilter.Add(new XElement(S + "filterColumn",
+                        new XAttribute("colId", criterion.Column - table.Range.Left), selected));
+                    continue;
+                }
+                string op = criterion.Operator == "Greater" ? "greaterThan" : criterion.Operator == "Less" ? "lessThan" :
+                    criterion.Operator == "Between" ? "greaterThanOrEqual" : criterion.Operator == "Nonblank" ? "notEqual" : "equal";
+                string value = criterion.Operator == "Contains" ? "*" + criterion.Value1 + "*" :
+                    criterion.Operator == "Begins With" ? criterion.Value1 + "*" :
+                    criterion.Operator == "Blank" || criterion.Operator == "Nonblank" ? "" : criterion.Value1;
+                var customs = new XElement(S + "customFilters", new XElement(S + "customFilter",
+                    new XAttribute("operator", op), new XAttribute("val", value)));
+                if (criterion.Operator == "Between")
+                {
+                    customs.SetAttributeValue("and", 1);
+                    customs.Add(new XElement(S + "customFilter", new XAttribute("operator", "lessThanOrEqual"),
+                        new XAttribute("val", criterion.Value2)));
+                }
+                autoFilter.Add(new XElement(S + "filterColumn",
+                    new XAttribute("colId", criterion.Column - table.Range.Left), customs));
+            }
             var header = new XElement(S + "tableColumns", new XAttribute("count", table.Range.Width));
             for (int c = table.Range.Left; c < table.Range.Right; c++)
             {
                 CellSnapshot cell;
                 string name = sheet.Cells.TryGetValue(table.Range.Top * columns + c, out cell) ? cell.Text : "";
                 if (string.IsNullOrEmpty(name)) name = "Column" + (c - table.Range.Left + 1);
-                header.Add(new XElement(S + "tableColumn", new XAttribute("id", c - table.Range.Left + 1),
-                    new XAttribute("name", name)));
+                var column = new XElement(S + "tableColumn", new XAttribute("id", c - table.Range.Left + 1),
+                    new XAttribute("name", name));
+                string formula;
+                if (table.CalculatedColumns.TryGetValue(c, out formula))
+                    column.Add(new XElement(S + "calculatedColumnFormula", formula.TrimStart('=')));
+                header.Add(column);
             }
             return new XDocument(new XElement(S + "table", new XAttribute("id", id),
                 new XAttribute("name", table.Name), new XAttribute("displayName", table.Name),
-                new XAttribute("ref", RangeAddress(table.Range)), new XAttribute("headerRowCount", 1),
-                new XElement(S + "autoFilter", new XAttribute("ref", RangeAddress(table.Range))), header,
-                new XElement(S + "tableStyleInfo", new XAttribute("name", "TableStyleMedium2"),
+                new XAttribute("ref", RangeAddress(table.Range)), new XAttribute("headerRowCount", table.HeaderRow ? 1 : 0),
+                new XAttribute("totalsRowCount", table.TotalRow ? 1 : 0),
+                table.Filter ? autoFilter : null, header,
+                new XElement(S + "tableStyleInfo", new XAttribute("name", table.Style),
                     new XAttribute("showFirstColumn", 0), new XAttribute("showLastColumn", 0),
-                    new XAttribute("showRowStripes", 1), new XAttribute("showColumnStripes", 0))));
+                    new XAttribute("showRowStripes", table.BandedRows ? 1 : 0),
+                    new XAttribute("showColumnStripes", table.BandedColumns ? 1 : 0))));
         }
     }
 }

@@ -21,6 +21,7 @@ namespace DinkCel
         private readonly Func<string, int, int, string> readOtherSheet;
         private readonly string currentSheet;
         private readonly Func<string, FormulaNamedRange> resolveName;
+        private readonly Func<string, string, string, int, FormulaNamedRange> resolveTable;
         private readonly int rowCount;
         private readonly int columnCount;
         private readonly Dictionary<string, Value> cache = new Dictionary<string, Value>();
@@ -52,11 +53,19 @@ namespace DinkCel
             Func<string, int, int, string> readOtherSheet, string currentSheet,
             int rowCount, int columnCount, Func<string, FormulaNamedRange> resolveName,
             Func<DateTime> nowProvider)
+            : this(readCell, readOtherSheet, currentSheet, rowCount, columnCount,
+                resolveName, nowProvider, null) { }
+
+        public FormulaEngine(Func<int, int, string> readCell,
+            Func<string, int, int, string> readOtherSheet, string currentSheet,
+            int rowCount, int columnCount, Func<string, FormulaNamedRange> resolveName,
+            Func<DateTime> nowProvider, Func<string, string, string, int, FormulaNamedRange> resolveTable)
         {
             this.readCell = readCell;
             this.readOtherSheet = readOtherSheet;
             this.currentSheet = currentSheet ?? "";
             this.resolveName = resolveName;
+            this.resolveTable = resolveTable;
             this.rowCount = rowCount;
             this.columnCount = columnCount;
             this.nowProvider = nowProvider ?? delegate { return DateTime.Now; };
@@ -139,7 +148,7 @@ namespace DinkCel
         {
             try
             {
-                Value result = new Parser(this, (expression ?? "").TrimStart('='), currentSheet).Parse().Evaluate(this);
+                Value result = new Parser(this, (expression ?? "").TrimStart('='), currentSheet, -1).Parse().Evaluate(this);
                 if (result.Kind == ValueKind.Number) return result.Number.ToString("0.##########", CultureInfo.InvariantCulture);
                 if (result.Kind == ValueKind.Blank) return "0";
                 if (result.Kind == ValueKind.Range) return "#VALUE!";
@@ -188,7 +197,7 @@ namespace DinkCel
                 else if (raw.StartsWith("=", StringComparison.Ordinal))
                 {
                     formula = true;
-                    result = new Parser(this, raw.Substring(1), sheet).Parse().Evaluate(this);
+                    result = new Parser(this, raw.Substring(1), sheet, row).Parse().Evaluate(this);
                 }
                 else if (raw.Length == 0)
                     result = Value.Blank();
@@ -632,13 +641,15 @@ namespace DinkCel
             private readonly FormulaEngine engine;
             private readonly string source;
             private readonly string sheet;
+            private readonly int currentRow;
             private int position;
 
-            public Parser(FormulaEngine engine, string source, string sheet)
+            public Parser(FormulaEngine engine, string source, string sheet, int currentRow)
             {
                 this.engine = engine;
                 this.source = source;
                 this.sheet = sheet;
+                this.currentRow = currentRow;
             }
 
             public Node Parse()
@@ -716,6 +727,7 @@ namespace DinkCel
                     return new LiteralNode(Value.Error(ReadError()));
                 if (Char.IsDigit(source[position]) || source[position] == '.')
                     return new LiteralNode(Value.Numeric(ReadNumber()));
+                if (source[position] == '[') return ReadStructured(null);
 
                 string explicitSheet = null;
                 if (source[position] == '\'')
@@ -731,6 +743,8 @@ namespace DinkCel
                     explicitSheet = word;
                     word = ReadWord();
                 }
+                if (explicitSheet == null && position < source.Length && source[position] == '[')
+                    return ReadStructured(word);
                 if (Take("("))
                 {
                     var arguments = new List<Node>();
@@ -776,6 +790,24 @@ namespace DinkCel
                     return new RangeNode(explicitSheet ?? sheet, row, column, lastRow, lastColumn);
                 }
                 return new ReferenceNode(explicitSheet ?? sheet, row, column);
+            }
+
+            private Node ReadStructured(string tableName)
+            {
+                Require("[");
+                bool current = Take("@");
+                int start = position;
+                while (position < source.Length && source[position] != ']') position++;
+                if (position >= source.Length) throw new FormatException();
+                string header = source.Substring(start, position - start);
+                Require("]");
+                FormulaNamedRange range = engine.resolveTable == null ? null :
+                    engine.resolveTable(sheet, tableName, header, current ? currentRow : -1);
+                if (range == null) return new LiteralNode(Value.Error("#REF!"));
+                if (range.FirstRow == range.LastRow && range.FirstColumn == range.LastColumn)
+                    return new ReferenceNode(range.Sheet, range.FirstRow, range.FirstColumn);
+                return new RangeNode(range.Sheet, range.FirstRow, range.FirstColumn,
+                    range.LastRow, range.LastColumn);
             }
 
             private string ReadSheetName()
@@ -912,6 +944,14 @@ namespace DinkCel
             int index = 0;
             while (index < formula.Length)
             {
+                if (formula[index] == '[')
+                {
+                    int end = formula.IndexOf(']', index + 1);
+                    if (end < 0) { result.Append(formula.Substring(index)); break; }
+                    result.Append(formula.Substring(index, end - index + 1));
+                    index = end + 1;
+                    continue;
+                }
                 if (formula[index] == '"')
                 {
                     result.Append(formula[index++]);
@@ -952,6 +992,7 @@ namespace DinkCel
                     cursor++;
                 bool valid = boundary && letters < digits &&
                     digits < cursor &&
+                    (cursor >= formula.Length || formula[cursor] != '[') &&
                     Int32.TryParse(formula.Substring(digits, cursor - digits), out row) &&
                     (cursor == formula.Length ||
                      !(Char.IsLetterOrDigit(formula[cursor]) ||
@@ -982,6 +1023,31 @@ namespace DinkCel
         private static readonly Regex StructureReference = new Regex(
             @"(?<![A-Za-z0-9_])(\$?[A-Za-z]+\$?[1-9][0-9]*)(?::(\$?[A-Za-z]+\$?[1-9][0-9]*))?(?![A-Za-z0-9_])",
             RegexOptions.Compiled);
+
+        private static string ReplaceStructureReferences(string segment, MatchEvaluator transform)
+        {
+            var result = new StringBuilder();
+            int start = 0;
+            while (start < segment.Length)
+            {
+                int bracket = segment.IndexOf('[', start);
+                int end = bracket < 0 ? segment.Length : bracket;
+                string code = segment.Substring(start, end - start);
+                result.Append(StructureReference.Replace(code, delegate(Match match)
+                {
+                    // A table name such as Table1 immediately precedes its column selector.
+                    if (bracket == end && match.Index + match.Length == code.Length)
+                        return match.Value;
+                    return transform(match);
+                }));
+                if (bracket < 0) break;
+                int close = segment.IndexOf(']', bracket + 1);
+                if (close < 0) { result.Append(segment.Substring(bracket)); break; }
+                result.Append(segment, bracket, close - bracket + 1);
+                start = close + 1;
+            }
+            return result.ToString();
+        }
 
         public static string ShiftStructureReferences(string formula, bool rows,
             int index, bool insert, int maxRows, int maxColumns)
@@ -1021,7 +1087,7 @@ namespace DinkCel
         private static void AppendShiftedSegment(StringBuilder result, string segment,
             bool rows, int index, bool insert, int maxRows, int maxColumns)
         {
-            result.Append(StructureReference.Replace(segment, delegate(Match match)
+            result.Append(ReplaceStructureReferences(segment, delegate(Match match)
             {
                 CellReference first;
                 if (!TryParseReference(match.Groups[1].Value, out first))
@@ -1110,7 +1176,7 @@ namespace DinkCel
         private static void AppendMovedSegment(StringBuilder result, string segment,
             bool rows, int sourceIndex, int targetIndex)
         {
-            result.Append(StructureReference.Replace(segment, delegate(Match match)
+            result.Append(ReplaceStructureReferences(segment, delegate(Match match)
             {
                 CellReference first;
                 if (!TryParseReference(match.Groups[1].Value, out first))

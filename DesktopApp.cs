@@ -128,9 +128,9 @@ namespace DinkCel
         public string FilterValue = "";
         public readonly Dictionary<int, CellState> Cells =
             new Dictionary<int, CellState>();
-        public readonly int[] RowHeights = new int[200];
+        public readonly int[] RowHeights = new int[50000];
         public readonly int[] ColumnWidths = new int[26];
-        public readonly bool[] HiddenRows = new bool[200];
+        public readonly bool[] HiddenRows = new bool[50000];
         public readonly bool[] HiddenColumns = new bool[26];
         public Color Background;
         public string ThemeId;
@@ -157,7 +157,8 @@ namespace DinkCel
 
     internal sealed partial class SpreadsheetForm : Form
     {
-        private const int RowCount = 200;
+        private const int MaxRowCount = 50000;
+        private int RowCount = 200;
         private const int ColumnCount = 26;
         private static readonly Font HeaderFont = new Font("Segoe UI", 9F);
 
@@ -203,6 +204,11 @@ namespace DinkCel
         private readonly ToolStripButton underlineButton = new ToolStripButton("U");
         private readonly Dictionary<int, string> calculated =
             new Dictionary<int, string>();
+        private readonly HashSet<int> gridOccupied = new HashSet<int>();
+        private readonly HashSet<int> formulaKeys = new HashSet<int>();
+        private readonly HashSet<int> changedCells = new HashSet<int>();
+        private readonly HashSet<int> changedRows = new HashSet<int>();
+        private bool scanAllCells = true;
         private FormulaEngine formulaEngine;
         private readonly List<SheetState> undoHistory = new List<SheetState>();
         private readonly List<SheetState> redoHistory = new List<SheetState>();
@@ -570,19 +576,40 @@ namespace DinkCel
             };
             grid.CellValueChanged += delegate(object sender, DataGridViewCellEventArgs e)
             {
+                if (e.RowIndex >= 0 && e.ColumnIndex >= 0)
+                {
+                    int key = e.RowIndex * ColumnCount + e.ColumnIndex;
+                    gridOccupied.Add(key); changedCells.Add(key);
+                    string raw = Convert.ToString(grid[e.ColumnIndex, e.RowIndex].Value) ?? "";
+                    if (raw.StartsWith("=", StringComparison.Ordinal)) formulaKeys.Add(key);
+                    else formulaKeys.Remove(key);
+                }
                 if (!loading)
                 {
                     if (e.RowIndex >= 0 && e.ColumnIndex >= 0 &&
                         !ValidateCellChange(e.RowIndex, e.ColumnIndex)) return;
+                    AutoExpandTable(e.RowIndex, e.ColumnIndex);
                     RecordChange();
                     Recalculate(e.RowIndex, e.ColumnIndex);
-                    if (filterColumn >= 0 || activeFilters.Count > 0) ApplyFreezeAndFilter();
+                    if (filterColumn >= 0 || activeFilters.Count > 0 || tables.Any(t => t.Filters.Count > 0)) ApplyFreezeAndFilter();
                     MarkDirty();
                     UpdateSelection();
+                    if (e.RowIndex >= RowCount - 2 && RowCount < MaxRowCount)
+                    {
+                        int needed = Math.Min(MaxRowCount, RowCount + 200);
+                        BeginInvoke((Action)delegate { EnsureRowCapacity(needed); });
+                    }
                 }
             };
-            grid.RowHeightChanged += delegate
+            grid.CellStyleChanged += delegate(object sender, DataGridViewCellEventArgs e)
             {
+                if (e.RowIndex >= 0 && e.ColumnIndex >= 0)
+                { int key = e.RowIndex * ColumnCount + e.ColumnIndex; gridOccupied.Add(key); changedCells.Add(key); }
+            };
+            grid.CellStyleContentChanged += delegate { if (!loading) scanAllCells = true; };
+            grid.RowHeightChanged += delegate(object sender, DataGridViewRowEventArgs e)
+            {
+                if (e.Row != null) changedRows.Add(e.Row.Index);
                 if (!loading && lastState != null)
                 {
                     RecordChange();
@@ -672,6 +699,34 @@ namespace DinkCel
             for (int row = 0; row < RowCount; row++)
                 grid.Rows[row].HeaderCell.Value = (row + 1).ToString();
             grid.CurrentCell = grid[0, 0];
+            grid.RowPostPaint += delegate(object sender, DataGridViewRowPostPaintEventArgs e)
+            {
+                if (e.RowIndex < 200) return;
+                TextRenderer.DrawText(e.Graphics, (e.RowIndex + 1).ToString(CultureInfo.InvariantCulture),
+                    grid.RowHeadersDefaultCellStyle.Font ?? grid.Font,
+                    new Rectangle(e.RowBounds.Left, e.RowBounds.Top, grid.RowHeadersWidth - 5, e.RowBounds.Height),
+                    grid.RowHeadersDefaultCellStyle.ForeColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+            };
+            grid.CellContextMenuStripNeeded += TableContextMenuNeeded;
+        }
+
+        private void EnsureRowCapacity(int needed)
+        {
+            if (needed <= RowCount) return;
+            if (needed > MaxRowCount) throw new InvalidOperationException("Bảng tính hỗ trợ tối đa 50.000 hàng.");
+            int old = RowCount;
+            int count = Math.Min(MaxRowCount, Math.Max(needed, ((needed + 199) / 200) * 200));
+            loading = true;
+            try
+            {
+                grid.Rows.Add(count - old);
+                RowCount = count;
+                if (count > 9999) grid.RowHeadersWidth = Math.Max(grid.RowHeadersWidth, 66);
+                foreach (SheetState sheet in sheets)
+                    for (int row = old; row < count; row++)
+                        if (sheet.RowHeights[row] == 0) sheet.RowHeights[row] = 27;
+            }
+            finally { loading = false; }
         }
 
         private void Recalculate()
@@ -710,19 +765,17 @@ namespace DinkCel
                         LastRow = named.Range.Bottom - 1,
                         LastColumn = named.Range.Right - 1
                     };
-                });
+                }, null, ResolveStructuredRange);
             else if (changedRow >= 0 && changedColumn >= 0)
                 formulaEngine.Invalidate(sheets[activeSheetIndex].Name,
                     changedRow, changedColumn);
-            for (int row = 0; row < RowCount; row++)
+            foreach (int key in formulaKeys.ToArray())
             {
-                for (int column = 0; column < ColumnCount; column++)
-                {
-                    string raw = Convert.ToString(grid[column, row].Value) ?? "";
-                    if (raw.StartsWith("=", StringComparison.Ordinal))
-                        calculated[row * ColumnCount + column] =
-                            formulaEngine.Display(row, column);
-                }
+                int row = key / ColumnCount, column = key % ColumnCount;
+                if (row >= RowCount) continue;
+                string raw = Convert.ToString(grid[column, row].Value) ?? "";
+                if (raw.StartsWith("=", StringComparison.Ordinal))
+                    calculated[key] = formulaEngine.Display(row, column);
             }
             grid.Invalidate();
         }
@@ -748,6 +801,7 @@ namespace DinkCel
                 try { e.Value = FormatNumeric(numeric, format); e.FormattingApplied = true; }
                 catch (FormatException) { }
             }
+            ApplyTableFormatting(e);
             ApplyConditionalFormatting(e, raw);
         }
 
@@ -1075,7 +1129,7 @@ namespace DinkCel
             state.Merges.AddRange(merges);
             state.Rules.AddRange(conditionalRules);
             state.Filters.AddRange(activeFilters);
-            state.Tables.AddRange(tables);
+            state.Tables.AddRange(tables.Select(t => t.Copy()));
             state.Charts.AddRange(charts);
             state.Validations.AddRange(validations);
             state.FreezeRow = freezeRow;
@@ -1086,29 +1140,55 @@ namespace DinkCel
             state.ThemeId = theme.Id;
             state.CsvRows = csvDocument == null ? 0 : csvDocument.DataRows;
             state.CsvColumns = csvDocument == null ? 0 : csvDocument.DataColumns;
-            for (int row = 0; row < RowCount; row++)
+            SheetState baseline = lastState != null && lastState.Name == state.Name ? lastState :
+                sheets.Count > activeSheetIndex ? sheets[activeSheetIndex] : null;
+            if (baseline != null)
             {
-                state.RowHeights[row] = Math.Max(1, (int)Math.Round(grid.Rows[row].Height * 100.0 / zoomPercent));
-                for (int column = 0; column < ColumnCount; column++)
-                {
-                    DataGridViewCell cell = grid[column, row];
-                    DataGridViewCellStyle style = cell.HasStyle ? cell.Style : null;
-                    if (cell.Value == null && !HasMeaningfulStyle(style) && cell.Tag == null)
-                        continue;
-                    state.Cells[row * ColumnCount + column] = new CellState
-                    {
-                        Value = cell.Value,
-                        Style = HasMeaningfulStyle(style) ?
-                            new DataGridViewCellStyle(style) : null,
-                        Extras = CellExtras.Copy(cell.Tag as CellExtras)
-                    };
-                }
+                Array.Copy(baseline.RowHeights, state.RowHeights, MaxRowCount);
+                foreach (var entry in baseline.Cells) state.Cells[entry.Key] = entry.Value;
             }
+            for (int row = 0; row < RowCount; row++) if (state.RowHeights[row] <= 0) state.RowHeights[row] = 27;
+            foreach (int row in changedRows)
+                if (row >= 0 && row < RowCount)
+                    state.RowHeights[row] = Math.Max(1, (int)Math.Round(grid.Rows[row].Height * 100.0 / zoomPercent));
+            if (scanAllCells)
+            {
+                state.Cells.Clear(); gridOccupied.Clear(); formulaKeys.Clear();
+                for (int row = 0; row < RowCount; row++)
+                    for (int column = 0; column < ColumnCount; column++)
+                        CaptureOneCell(state, row * ColumnCount + column);
+            }
+            else
+                foreach (int key in changedCells)
+                    if (key >= 0 && key / ColumnCount < RowCount) CaptureOneCell(state, key);
+            changedCells.Clear(); changedRows.Clear(); scanAllCells = false;
             for (int column = 0; column < ColumnCount; column++)
                 state.ColumnWidths[column] = Math.Max(1, (int)Math.Round(grid.Columns[column].Width * 100.0 / zoomPercent));
             Array.Copy(manualHiddenRows, state.HiddenRows, RowCount);
             Array.Copy(manualHiddenColumns, state.HiddenColumns, ColumnCount);
             return state;
+        }
+
+        private void CaptureOneCell(SheetState state, int key)
+        {
+            int row = key / ColumnCount, column = key % ColumnCount;
+            DataGridViewCell cell = grid[column, row];
+            DataGridViewCellStyle style = cell.HasStyle ? cell.Style : null;
+            if (cell.Value == null && !HasMeaningfulStyle(style) && cell.Tag == null)
+            {
+                state.Cells.Remove(key); gridOccupied.Remove(key); formulaKeys.Remove(key);
+                return;
+            }
+            state.Cells[key] = new CellState
+            {
+                Value = cell.Value,
+                Style = HasMeaningfulStyle(style) ? new DataGridViewCellStyle(style) : null,
+                Extras = CellExtras.Copy(cell.Tag as CellExtras)
+            };
+            gridOccupied.Add(key);
+            string raw = Convert.ToString(cell.Value) ?? "";
+            if (raw.StartsWith("=", StringComparison.Ordinal)) formulaKeys.Add(key);
+            else formulaKeys.Remove(key);
         }
 
         private static bool HasMeaningfulStyle(DataGridViewCellStyle style)
@@ -1126,6 +1206,7 @@ namespace DinkCel
             redoHistory.Clear();
             nextRevision = 0;
             savedRevision = 0;
+            lastState = null;
             lastState = CaptureSheet();
             lastState.RevisionId = 0;
             sheetHistories.Clear();
@@ -1159,16 +1240,19 @@ namespace DinkCel
             grid.SuspendLayout();
             try
             {
-                foreach (DataGridViewRow row in grid.Rows)
-                    foreach (DataGridViewCell cell in row.Cells)
+                IEnumerable<int> occupied = scanAllCells ? Enumerable.Range(0, RowCount * ColumnCount) : gridOccupied.ToArray();
+                foreach (int key in occupied)
+                {
+                    if (key < 0 || key / ColumnCount >= RowCount) continue;
+                    DataGridViewCell cell = grid[key % ColumnCount, key / ColumnCount];
+                    if (cell.Value != null || cell.HasStyle || cell.Tag != null)
                     {
-                        if (cell.Value != null || cell.HasStyle || cell.Tag != null)
-                        {
-                            cell.Value = null;
-                            cell.Style = new DataGridViewCellStyle();
-                            cell.Tag = null;
-                        }
+                        cell.Value = null;
+                        cell.Style = new DataGridViewCellStyle();
+                        cell.Tag = null;
                     }
+                }
+                gridOccupied.Clear(); formulaKeys.Clear(); changedCells.Clear(); changedRows.Clear(); scanAllCells = false;
                 foreach (KeyValuePair<int, CellState> item in state.Cells)
                 {
                     DataGridViewCell cell = grid[item.Key % ColumnCount,
@@ -1177,6 +1261,8 @@ namespace DinkCel
                     if (item.Value.Style != null)
                         cell.Style = new DataGridViewCellStyle(item.Value.Style);
                     cell.Tag = CellExtras.Copy(item.Value.Extras);
+                    gridOccupied.Add(item.Key);
+                    if ((Convert.ToString(item.Value.Value) ?? "").StartsWith("=", StringComparison.Ordinal)) formulaKeys.Add(item.Key);
                 }
                 for (int row = 0; row < RowCount; row++)
                     grid.Rows[row].Height = Math.Max(5, (int)Math.Round(state.RowHeights[row] * zoomPercent / 100.0));
@@ -1189,7 +1275,7 @@ namespace DinkCel
                 conditionalRules.Clear();
                 conditionalRules.AddRange(state.Rules);
                 activeFilters.Clear(); activeFilters.AddRange(state.Filters);
-                tables.Clear(); tables.AddRange(state.Tables);
+                tables.Clear(); tables.AddRange(state.Tables.Select(t => t.Copy()));
                 charts.Clear(); charts.AddRange(state.Charts);
                 validations.Clear(); validations.AddRange(state.Validations);
                 freezeRow = state.FreezeRow;
@@ -1209,6 +1295,7 @@ namespace DinkCel
             }
             finally
             {
+                changedCells.Clear(); changedRows.Clear(); scanAllCells = false;
                 grid.ResumeLayout();
                 loading = false;
             }
@@ -1232,8 +1319,7 @@ namespace DinkCel
             undoHistory.RemoveAt(last);
             redoHistory.Add(lastState);
             RestoreSheet(previous);
-            lastState = CaptureSheet();
-            lastState.RevisionId = previous.RevisionId;
+            lastState = previous;
             status.Text = "Đã hoàn tác";
         }
 
@@ -1247,9 +1333,8 @@ namespace DinkCel
             redoHistory.RemoveAt(last);
             undoHistory.Add(lastState);
             RestoreSheet(next);
-            lastState = CaptureSheet();
+            lastState = next;
             AfterRedoCrossSheetMove(next.RevisionId);
-            lastState.RevisionId = next.RevisionId;
             status.Text = "Đã làm lại";
         }
 
@@ -1282,19 +1367,22 @@ namespace DinkCel
         {
             loading = true;
             grid.SuspendLayout();
-            foreach (DataGridViewRow row in grid.Rows)
+            for (int row = 0; row < RowCount; row++)
+                if ((grid.Rows.GetRowState(row) & DataGridViewElementStates.Visible) == 0)
+                    grid.Rows[row].Visible = true;
+            IEnumerable<int> occupied = scanAllCells ? Enumerable.Range(0, RowCount * ColumnCount) : gridOccupied.ToArray();
+            foreach (int key in occupied)
             {
-                row.Visible = true;
-                foreach (DataGridViewCell cell in row.Cells)
+                if (key < 0 || key / ColumnCount >= RowCount) continue;
+                DataGridViewCell cell = grid[key % ColumnCount, key / ColumnCount];
+                if (cell.Value != null || cell.HasStyle || cell.Tag != null)
                 {
-                    if (cell.Value != null || cell.HasStyle || cell.Tag != null)
-                    {
-                        cell.Value = null;
-                        cell.Style = new DataGridViewCellStyle();
-                        cell.Tag = null;
-                    }
+                    cell.Value = null;
+                    cell.Style = new DataGridViewCellStyle();
+                    cell.Tag = null;
                 }
             }
+            gridOccupied.Clear(); formulaKeys.Clear(); changedCells.Clear(); changedRows.Clear(); scanAllCells = false;
             foreach (DataGridViewColumn column in grid.Columns) column.Visible = true;
             Array.Clear(manualHiddenRows, 0, RowCount);
             Array.Clear(manualHiddenColumns, 0, ColumnCount);
@@ -1312,6 +1400,8 @@ namespace DinkCel
             if (!ConfirmDiscardChanges())
                 return;
             ClearGrid();
+            if (RowCount > 200)
+            { grid.RowCount = 200; RowCount = 200; }
             loading = true;
             for (int row = 0; row < RowCount; row++)
                 grid.Rows[row].Height = Math.Max(5, (int)Math.Round(27 * zoomPercent / 100.0));
@@ -1365,9 +1455,9 @@ namespace DinkCel
                     string extension = Path.GetExtension(path).ToLowerInvariant();
                     CsvDocument csv = null;
                     WorkbookSnapshot workbook = isCsv ? ReadCsvWorkbook(path, out csv) :
-                        extension == ".xlsx" ? XlsxFile.Read(path, RowCount, ColumnCount) :
-                        extension == ".xls" ? XlsFile.Read(path, RowCount, ColumnCount) :
-                        extension == ".ods" ? OdsFile.Read(path, RowCount, ColumnCount) : ReadWorkbook(path);
+                        extension == ".xlsx" ? XlsxFile.Read(path, MaxRowCount, ColumnCount) :
+                        extension == ".xls" ? XlsFile.Read(path, MaxRowCount, ColumnCount) :
+                        extension == ".ods" ? OdsFile.Read(path, MaxRowCount, ColumnCount) : ReadWorkbook(path);
                     ClearGrid();
                     ThemePalette savedTheme = ThemePalette.Find(workbook.ThemeId);
                     if (savedTheme != null)
@@ -1388,6 +1478,10 @@ namespace DinkCel
                     }
                     if (sheets.Count == 0)
                         sheets.Add(new SheetState { Name = "Sheet1" });
+                    int neededRows = sheets.SelectMany(s => s.Cells.Keys).DefaultIfEmpty(0).Max() / ColumnCount + 1;
+                    neededRows = Math.Max(neededRows, sheets.SelectMany(s => s.Tables).Select(t => t.Range.Bottom).DefaultIfEmpty(0).Max());
+                    neededRows = Math.Max(neededRows, namedRanges.Select(n => n.Range.Bottom).DefaultIfEmpty(0).Max());
+                    EnsureRowCapacity(Math.Max(200, Math.Min(MaxRowCount, neededRows + 100)));
                     activeSheetIndex = sheets.FindIndex(s => !s.Hidden);
                     if (activeSheetIndex < 0) { sheets[0].Hidden = false; activeSheetIndex = 0; }
                     csvDocument = csv;
@@ -1416,7 +1510,7 @@ namespace DinkCel
         {
             var workbook = new WorkbookSnapshot();
             workbook.Sheets[0].Name = Path.GetFileNameWithoutExtension(path);
-            csv = CsvFile.ReadDocument(path, RowCount, ColumnCount);
+            csv = CsvFile.ReadDocument(path, MaxRowCount, ColumnCount);
             IList<string[]> rows = csv.Rows;
             for (int row = 0; row < rows.Count; row++)
                 for (int column = 0; column < rows[row].Length; column++)
@@ -1504,7 +1598,7 @@ namespace DinkCel
             {
                 int row = int.Parse(element.Attribute("row").Value) - 1;
                 int column = int.Parse(element.Attribute("column").Value) - 1;
-                if (row < 0 || row >= RowCount || column < 0 || column >= ColumnCount)
+                if (row < 0 || row >= MaxRowCount || column < 0 || column >= ColumnCount)
                     throw new InvalidDataException("Tệp chứa ô nằm ngoài bảng.");
                 var snapshot = new CellSnapshot();
                 snapshot.Text = element.Value;
@@ -1863,17 +1957,19 @@ namespace DinkCel
                 return;
             grid.EndEdit();
             int index = row ? grid.CurrentCell.RowIndex : grid.CurrentCell.ColumnIndex;
+            if (row && insert && RowCount < MaxRowCount)
+                EnsureRowCapacity(RowCount + 1);
             if (insert && index == (row ? RowCount : ColumnCount) - 1)
             {
                 MessageBox.Show(this,
-                    "Không thể chèn tại mép cuối của bảng 200 hàng × 26 cột.",
+                    "Không thể chèn tại mép cuối của bảng 50.000 hàng × 26 cột.",
                     "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
             if (insert && EdgeHasContent(row))
             {
                 MessageBox.Show(this,
-                    row ? "Không thể chèn: hàng 200 đang có dữ liệu hoặc định dạng."
+                    row ? "Không thể chèn: hàng cuối đang có dữ liệu hoặc định dạng."
                         : "Không thể chèn: cột Z đang có dữ liệu hoặc định dạng.",
                     "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
@@ -1914,6 +2010,7 @@ namespace DinkCel
                     }
                 }
                 RebaseFormulas(row, index, insert);
+                AdjustTableStructure(row, index, insert);
                 if (csvDocument != null)
                 {
                     if (row && (insert ? index <= csvDocument.DataRows :
@@ -2027,6 +2124,11 @@ namespace DinkCel
             if (source < 0 || source >= limit || target < 0 || target >= limit ||
                 source == target)
                 return;
+            if (MoveCrossesTable(row, source, target))
+            {
+                status.Text = "Không thể kéo qua ranh giới Table hoặc đổi thứ tự cột Table.";
+                return;
+            }
             grid.EndEdit();
             int count = row ? ColumnCount : RowCount;
             var held = new CellState[count];

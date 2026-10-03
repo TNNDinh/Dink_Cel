@@ -50,6 +50,8 @@ namespace DinkCel
             actual = actual ?? "";
             if (op == "Blank") return actual.Length == 0;
             if (op == "Nonblank") return actual.Length > 0;
+            if (op == "One Of") return (first ?? "").Split('\n')
+                .Any(choice => string.Equals(actual, choice.TrimEnd('\r'), StringComparison.CurrentCultureIgnoreCase));
             if (op == "Contains") return actual.IndexOf(first ?? "", StringComparison.CurrentCultureIgnoreCase) >= 0;
             if (op == "Begins With") return actual.StartsWith(first ?? "", StringComparison.CurrentCultureIgnoreCase);
             double n1, n2;
@@ -208,7 +210,12 @@ namespace DinkCel
             if (grid.SelectedCells.Count > 1)
             { first = Math.Max(1, grid.SelectedCells.Cast<DataGridViewCell>().Min(c => c.RowIndex)); last = grid.SelectedCells.Cast<DataGridViewCell>().Max(c => c.RowIndex); }
             if (tables.Any(t => t.Range.Top == first)) first++;
-            while (last > first && Enumerable.Range(0, ColumnCount).All(c => string.IsNullOrEmpty(Convert.ToString(grid[c, last].Value)))) last--;
+            if (grid.SelectedCells.Count <= 1)
+                last = gridOccupied.Where(key => key / ColumnCount >= first &&
+                    !string.IsNullOrEmpty(Convert.ToString(grid[key % ColumnCount, key / ColumnCount].Value)))
+                    .Select(key => key / ColumnCount).DefaultIfEmpty(first).Max();
+            else while (last > first && Enumerable.Range(0, ColumnCount).All(c =>
+                string.IsNullOrEmpty(Convert.ToString(grid[c, last].Value)))) last--;
             if (last <= first) return;
             if (merges.Any(m => m.IntersectsWith(new Rectangle(0, first, ColumnCount, last - first + 1))))
             { MessageBox.Show(this, "Hãy bỏ gộp ô trong vùng trước khi sắp xếp.", "DinkCel"); return; }
@@ -276,8 +283,11 @@ namespace DinkCel
             if (row == 0 || row < freezeRow) return true;
             if (filterColumn >= 0 && filterColumn < ColumnCount && !activeFilters.Any(f => f.Column == filterColumn) &&
                 (Convert.ToString(grid[filterColumn, row].Value) ?? "").IndexOf(filterValue, StringComparison.CurrentCultureIgnoreCase) < 0) return false;
-            return activeFilters.All(f => f.Column >= 0 && f.Column < ColumnCount &&
-                DataTools.Match(CellDisplay(row, f.Column), f.Kind, f.Operator, f.Value1, f.Value2));
+            if (!activeFilters.All(f => f.Column >= 0 && f.Column < ColumnCount &&
+                DataTools.Match(CellDisplay(row, f.Column), f.Kind, f.Operator, f.Value1, f.Value2))) return false;
+            return tables.All(t => !t.Filter || row < DataStart(t) || row >= DataEnd(t) ||
+                t.Filters.All(f => DataTools.Match(CellDisplay(row, f.Column), f.Kind,
+                    f.Operator, f.Value1, f.Value2)));
         }
 
         private string CellDisplay(int row, int column)
@@ -579,7 +589,9 @@ namespace DinkCel
                 if (rule != null && hit.Sheet == activeSheetIndex && !CanAcceptValue(row, col, value)) continue;
                 if (rule != null && hit.Sheet != activeSheetIndex &&
                     !AcceptOnSheet(sheet, rule, row, col, value)) continue;
-                cell.Value = value; changed++;
+                sheet.Cells[hit.Key] = new CellState { Value = value, Style = cell.Style,
+                    Extras = CellExtras.Copy(cell.Extras) };
+                changed++;
             }
             if (changed > 0)
             {

@@ -80,7 +80,7 @@ namespace DinkCel
     {
         private readonly ToolStripComboBox fontCombo = new ToolStripComboBox();
         private CellState painterSource;
-        private readonly bool[] manualHiddenRows = new bool[RowCount];
+        private readonly bool[] manualHiddenRows = new bool[MaxRowCount];
         private readonly bool[] manualHiddenColumns = new bool[ColumnCount];
 
         private void AddFormattingMenus(ToolStripMenuItem formatMenu)

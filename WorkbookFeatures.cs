@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Xml.Linq;
 
 namespace DinkCel
@@ -9,6 +10,44 @@ namespace DinkCel
     {
         public string Name = "Table1";
         public Rectangle Range;
+        public string Style = "TableStyleMedium2";
+        public bool HeaderRow = true;
+        public bool TotalRow;
+        public bool BandedRows = true;
+        public bool BandedColumns;
+        public bool AutoExpand = true;
+        public bool Filter = true;
+        public readonly Dictionary<int, string> CalculatedColumns = new Dictionary<int, string>();
+        public readonly List<FilterCriterion> Filters = new List<FilterCriterion>();
+
+        public TableDefinition Copy()
+        {
+            var result = new TableDefinition { Name = Name, Range = Range, Style = Style,
+                HeaderRow = HeaderRow, TotalRow = TotalRow, BandedRows = BandedRows,
+                BandedColumns = BandedColumns, AutoExpand = AutoExpand, Filter = Filter };
+            foreach (var entry in CalculatedColumns) result.CalculatedColumns[entry.Key] = entry.Value;
+            result.Filters.AddRange(Filters.Select(f => new FilterCriterion { Column = f.Column,
+                Kind = f.Kind, Operator = f.Operator, Value1 = f.Value1, Value2 = f.Value2 }));
+            return result;
+        }
+    }
+
+    internal sealed class PivotAxisField
+    {
+        public int Column;
+        public string DateGroup = "None";
+    }
+
+    internal sealed class PivotValueField
+    {
+        public int Column;
+        public string Aggregate = "Sum";
+    }
+
+    internal sealed class PivotFilterField
+    {
+        public int Column;
+        public string Value = "";
     }
 
     internal sealed class ChartDefinition
@@ -49,6 +88,18 @@ namespace DinkCel
         public int ValueColumn;
         public string Aggregate = "Sum";
         public string TargetSheet;
+        public string SourceTable = "";
+        public int LastOutputRows;
+        public int LastOutputColumns;
+        public readonly List<PivotAxisField> Rows = new List<PivotAxisField>();
+        public readonly List<PivotAxisField> Columns = new List<PivotAxisField>();
+        public readonly List<PivotValueField> Values = new List<PivotValueField>();
+        public readonly List<PivotFilterField> Filters = new List<PivotFilterField>();
+        public readonly HashSet<string> Collapsed = new HashSet<string>();
+        public bool GrandTotal = true;
+        public bool Subtotal = true;
+        public bool SortDescending;
+        public bool SortByValue;
     }
 
     internal sealed partial class SpreadsheetForm
@@ -71,8 +122,18 @@ namespace DinkCel
         {
             foreach (TableDefinition table in sheet.Tables)
             {
-                var element = new XElement("table", new XAttribute("name", table.Name));
+                var element = new XElement("table", new XAttribute("name", table.Name),
+                    new XAttribute("style", table.Style), new XAttribute("headerRow", table.HeaderRow),
+                    new XAttribute("totalRow", table.TotalRow), new XAttribute("bandedRows", table.BandedRows),
+                    new XAttribute("bandedColumns", table.BandedColumns), new XAttribute("autoExpand", table.AutoExpand),
+                    new XAttribute("filter", table.Filter));
                 SetRange(element, table.Range);
+                foreach (var entry in table.CalculatedColumns)
+                    element.Add(new XElement("calculatedColumn", new XAttribute("column", entry.Key), entry.Value));
+                foreach (FilterCriterion criterion in table.Filters)
+                    element.Add(new XElement("tableFilter", new XAttribute("column", criterion.Column),
+                        new XAttribute("kind", criterion.Kind), new XAttribute("operator", criterion.Operator),
+                        new XAttribute("value1", criterion.Value1), new XAttribute("value2", criterion.Value2)));
                 root.Add(element);
             }
             foreach (ChartDefinition chart in sheet.Charts)
@@ -99,8 +160,25 @@ namespace DinkCel
         private static void ReadSheetMetadata(XElement root, SheetSnapshot sheet)
         {
             foreach (XElement element in root.Elements("table"))
-                sheet.Tables.Add(new TableDefinition { Name = (string)element.Attribute("name") ?? "Table",
-                    Range = GetRange(element) });
+            {
+                var table = new TableDefinition { Name = (string)element.Attribute("name") ?? "Table",
+                    Range = GetRange(element), Style = (string)element.Attribute("style") ?? "TableStyleMedium2",
+                    HeaderRow = (bool?)element.Attribute("headerRow") ?? true,
+                    TotalRow = (bool?)element.Attribute("totalRow") ?? false,
+                    BandedRows = (bool?)element.Attribute("bandedRows") ?? true,
+                    BandedColumns = (bool?)element.Attribute("bandedColumns") ?? false,
+                    AutoExpand = (bool?)element.Attribute("autoExpand") ?? true,
+                    Filter = (bool?)element.Attribute("filter") ?? true };
+                foreach (XElement calc in element.Elements("calculatedColumn"))
+                    table.CalculatedColumns[(int)calc.Attribute("column")] = calc.Value;
+                foreach (XElement filter in element.Elements("tableFilter"))
+                    table.Filters.Add(new FilterCriterion { Column = (int)filter.Attribute("column"),
+                        Kind = (string)filter.Attribute("kind") ?? "Text",
+                        Operator = (string)filter.Attribute("operator") ?? "Contains",
+                        Value1 = (string)filter.Attribute("value1") ?? "",
+                        Value2 = (string)filter.Attribute("value2") ?? "" });
+                sheet.Tables.Add(table);
+            }
             foreach (XElement element in root.Elements("chart"))
                 sheet.Charts.Add(new ChartDefinition { Title = (string)element.Attribute("title") ?? "Chart",
                     Kind = (string)element.Attribute("kind") ?? "Column", Range = GetRange(element) });
@@ -138,8 +216,26 @@ namespace DinkCel
                     new XAttribute("groupColumn", pivot.GroupColumn),
                     new XAttribute("valueColumn", pivot.ValueColumn),
                     new XAttribute("aggregate", pivot.Aggregate),
-                    new XAttribute("targetSheet", pivot.TargetSheet));
+                    new XAttribute("targetSheet", pivot.TargetSheet),
+                    new XAttribute("sourceTable", pivot.SourceTable),
+                    new XAttribute("outputRows", pivot.LastOutputRows),
+                    new XAttribute("outputColumns", pivot.LastOutputColumns),
+                    new XAttribute("grandTotal", pivot.GrandTotal), new XAttribute("subtotal", pivot.Subtotal),
+                    new XAttribute("sortDescending", pivot.SortDescending), new XAttribute("sortByValue", pivot.SortByValue));
                 SetRange(element, pivot.SourceRange);
+                foreach (PivotAxisField field in pivot.Rows)
+                    element.Add(new XElement("rowField", new XAttribute("column", field.Column),
+                        new XAttribute("dateGroup", field.DateGroup)));
+                foreach (PivotAxisField field in pivot.Columns)
+                    element.Add(new XElement("columnField", new XAttribute("column", field.Column),
+                        new XAttribute("dateGroup", field.DateGroup)));
+                foreach (PivotValueField field in pivot.Values)
+                    element.Add(new XElement("valueField", new XAttribute("column", field.Column),
+                        new XAttribute("aggregate", field.Aggregate)));
+                foreach (PivotFilterField field in pivot.Filters)
+                    element.Add(new XElement("filterField", new XAttribute("column", field.Column),
+                        new XAttribute("value", field.Value)));
+                foreach (string group in pivot.Collapsed) element.Add(new XElement("collapsed", group));
                 root.Add(element);
             }
         }
@@ -150,11 +246,30 @@ namespace DinkCel
                 workbook.NamedRanges.Add(new NamedRange { Name = (string)element.Attribute("name"),
                     Sheet = (string)element.Attribute("sheet"), Range = GetRange(element) });
             foreach (XElement element in root.Elements("pivot"))
-                workbook.Pivots.Add(new PivotDefinition { SourceSheet = (string)element.Attribute("sourceSheet"),
+            {
+                var pivot = new PivotDefinition { SourceSheet = (string)element.Attribute("sourceSheet"),
                     SourceRange = GetRange(element), GroupColumn = (int)element.Attribute("groupColumn"),
                     ValueColumn = (int)element.Attribute("valueColumn"),
                     Aggregate = (string)element.Attribute("aggregate") ?? "Sum",
-                    TargetSheet = (string)element.Attribute("targetSheet") });
+                    TargetSheet = (string)element.Attribute("targetSheet"),
+                    SourceTable = (string)element.Attribute("sourceTable") ?? "",
+                    LastOutputRows = (int?)element.Attribute("outputRows") ?? 0,
+                    LastOutputColumns = (int?)element.Attribute("outputColumns") ?? 0,
+                    GrandTotal = (bool?)element.Attribute("grandTotal") ?? true,
+                    Subtotal = (bool?)element.Attribute("subtotal") ?? true,
+                    SortDescending = (bool?)element.Attribute("sortDescending") ?? false,
+                    SortByValue = (bool?)element.Attribute("sortByValue") ?? false };
+                foreach (XElement field in element.Elements("rowField")) pivot.Rows.Add(new PivotAxisField
+                { Column = (int)field.Attribute("column"), DateGroup = (string)field.Attribute("dateGroup") ?? "None" });
+                foreach (XElement field in element.Elements("columnField")) pivot.Columns.Add(new PivotAxisField
+                { Column = (int)field.Attribute("column"), DateGroup = (string)field.Attribute("dateGroup") ?? "None" });
+                foreach (XElement field in element.Elements("valueField")) pivot.Values.Add(new PivotValueField
+                { Column = (int)field.Attribute("column"), Aggregate = (string)field.Attribute("aggregate") ?? "Sum" });
+                foreach (XElement field in element.Elements("filterField")) pivot.Filters.Add(new PivotFilterField
+                { Column = (int)field.Attribute("column"), Value = (string)field.Attribute("value") ?? "" });
+                foreach (XElement collapsed in element.Elements("collapsed")) pivot.Collapsed.Add(collapsed.Value);
+                workbook.Pivots.Add(pivot);
+            }
         }
     }
 }

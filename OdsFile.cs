@@ -99,7 +99,7 @@ namespace DinkCel
                         if (rowRepeat > rows - r && row.Elements(Table + "table-cell").Any(cell =>
                             !string.IsNullOrEmpty((string)cell.Attribute(Table + "formula")) ||
                             ReadCellText(cell).Length > 0))
-                            throw new InvalidDataException("ODS contains data outside the 200 x 26 grid.");
+                            throw new InvalidDataException("ODS contains data outside the 50,000 x 26 grid.");
                         for (int repeatRow = 0; repeatRow < rowRepeat && r < rows; repeatRow++, r++)
                         {
                             int c = 0;
@@ -113,7 +113,7 @@ namespace DinkCel
                                 int spanColumns = (int?)cell.Attribute(Table + "number-columns-spanned") ?? 1;
                                 int spanRows = (int?)cell.Attribute(Table + "number-rows-spanned") ?? 1;
                                 if (repeat > columns - c && value.Length > 0)
-                                    throw new InvalidDataException("ODS contains data outside the 200 x 26 grid.");
+                                    throw new InvalidDataException("ODS contains data outside the 50,000 x 26 grid.");
                                 int visible = Math.Max(0, Math.Min(repeat, columns - c));
                                 for (int k = 0; k < visible; k++, c++)
                                 {

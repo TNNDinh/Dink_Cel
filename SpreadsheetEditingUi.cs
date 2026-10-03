@@ -71,11 +71,11 @@ namespace DinkCel
         private static bool ParseCellAddress(string text, out int column, out int row)
         {
             column = row = -1;
-            Match match = Regex.Match(text.Trim(), @"^\$?([A-Z])\$?([1-9][0-9]{0,2})$", RegexOptions.IgnoreCase);
+            Match match = Regex.Match(text.Trim(), @"^\$?([A-Z])\$?([1-9][0-9]{0,4})$", RegexOptions.IgnoreCase);
             if (!match.Success) return false;
             column = char.ToUpperInvariant(match.Groups[1].Value[0]) - 'A';
             row = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) - 1;
-            return row < RowCount && column < ColumnCount;
+            return row < MaxRowCount && column < ColumnCount;
         }
 
         private static Rectangle SelectedRectangle(DataGridView view, bool requireContiguous)
@@ -163,6 +163,7 @@ namespace DinkCel
             }
             if (requests.Any(x => x.Item1 != requests[0].Item1)) return false;
             if (requests[0].Item1 != activeSheetIndex) SwitchSheet(requests[0].Item1);
+            EnsureRowCapacity(requests.Max(x => x.Item2.Bottom));
             grid.ClearSelection();
             for (int i = 0; i < requests.Count; i++)
             {
@@ -484,8 +485,9 @@ namespace DinkCel
             }
             int outputRows = kind == PasteKind.Transpose ? columns : rows;
             int outputColumns = kind == PasteKind.Transpose ? rows : columns;
-            if (targetRow + outputRows > RowCount || targetColumn + outputColumns > ColumnCount)
-            { status.Text = "Vùng dán vượt quá bảng 200 × 26"; return; }
+            if (targetRow + outputRows > MaxRowCount || targetColumn + outputColumns > ColumnCount)
+            { status.Text = "Vùng dán vượt quá bảng 50.000 × 26"; return; }
+            EnsureRowCapacity(targetRow + outputRows);
             for (int r = 0; r < outputRows; r++)
                 for (int c = 0; c < outputColumns; c++)
                 {

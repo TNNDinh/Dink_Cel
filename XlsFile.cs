@@ -83,7 +83,7 @@ namespace DinkCel
                         if (line == null) continue;
                         if (r >= rows)
                         {
-                            if (line.PhysicalNumberOfCells > 0) throw new InvalidDataException("XLS contains data outside the 200 x 26 grid.");
+                            if (line.PhysicalNumberOfCells > 0) throw new InvalidDataException("XLS contains data outside the 50,000 x 26 grid.");
                             continue;
                         }
                         if (line.HeightInPoints > 0 && Math.Abs(line.HeightInPoints - source.DefaultRowHeightInPoints) > 0.1)
@@ -93,7 +93,7 @@ namespace DinkCel
                         {
                             ICell cell = line.GetCell(c);
                             if (cell == null) continue;
-                            if (c >= columns) throw new InvalidDataException("XLS contains data outside the 200 x 26 grid.");
+                            if (c >= columns) throw new InvalidDataException("XLS contains data outside the 50,000 x 26 grid.");
                             string value = "";
                             switch (cell.CellType)
                             {

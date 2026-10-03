@@ -26,10 +26,9 @@ namespace DinkCel
             if (useDataWhenSingle)
             {
                 int bottom = 0, right = 0;
-                for (int r = 0; r < RowCount; r++)
-                    for (int c = 0; c < ColumnCount; c++)
-                        if (!string.IsNullOrEmpty(Convert.ToString(grid[c, r].Value)))
-                        { bottom = Math.Max(bottom, r); right = Math.Max(right, c); }
+                foreach (int key in gridOccupied)
+                    if (!string.IsNullOrEmpty(Convert.ToString(grid[key % ColumnCount, key / ColumnCount].Value)))
+                    { bottom = Math.Max(bottom, key / ColumnCount); right = Math.Max(right, key % ColumnCount); }
                 return new Rectangle(0, 0, right + 1, bottom + 1);
             }
             return grid.CurrentCell == null ? Rectangle.Empty :
@@ -67,36 +66,7 @@ namespace DinkCel
 
         private void CreateTable()
         {
-            Rectangle range = SelectionRange(true);
-            if (range.Height < 2 || range.Width < 1)
-            { MessageBox.Show(this, "Table cần hàng tiêu đề và ít nhất một hàng dữ liệu."); return; }
-            string name = Prompt("Tên Table", "Table" + (tables.Count + 1));
-            if (name == null) return;
-            name = name.Trim();
-            if (!ValidName(name) || tables.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase)))
-            { MessageBox.Show(this, "Tên Table không hợp lệ hoặc đã tồn tại."); return; }
-            tables.Add(new TableDefinition { Name = name, Range = range });
-            loading = true;
-            try
-            {
-                for (int r = range.Top; r < range.Bottom; r++)
-                    for (int c = range.Left; c < range.Right; c++)
-                    {
-                        var cell = grid[c, r];
-                        if (r == range.Top)
-                        {
-                            cell.Style.BackColor = theme.Accent;
-                            cell.Style.ForeColor = Color.White;
-                            Font original = cell.InheritedStyle.Font ?? grid.Font;
-                            cell.Style.Font = new Font(original, original.Style | FontStyle.Bold);
-                        }
-                        else if ((r - range.Top) % 2 == 0)
-                            cell.Style.BackColor = Color.FromArgb(228, 240, 248);
-                    }
-            }
-            finally { loading = false; }
-            RecordChange(); MarkDirty(); grid.Invalidate();
-            status.Text = "Đã tạo " + name + " (hàng đầu là tiêu đề)";
+            CreateStyledTable();
         }
 
         private void AddDropdown()
@@ -320,34 +290,7 @@ namespace DinkCel
 
         private void CreatePivot()
         {
-            Rectangle range = SelectionRange(true);
-            if (range.Width < 2 || range.Height < 2)
-            { MessageBox.Show(this, "Pivot Table cần tiêu đề và ít nhất một hàng dữ liệu."); return; }
-            var headers = new List<string>();
-            for (int c = range.Left; c < range.Right; c++)
-            {
-                string name = Convert.ToString(grid[c, range.Top].Value);
-                headers.Add(string.IsNullOrEmpty(name) ? grid.Columns[c].HeaderText : name);
-            }
-            string group = ChooseOption("Cột nhóm", headers);
-            if (group == null) return;
-            string value = ChooseOption("Cột giá trị", headers);
-            if (value == null) return;
-            string aggregate = ChooseOption("Phép tổng hợp", new[] { "Sum", "Count" });
-            if (aggregate == null) return;
-            string sourceName = sheets[activeSheetIndex].Name;
-            AddSheet();
-            int targetNumber = pivots.Count + 1;
-            while (sheets.Any(s => s != sheets[activeSheetIndex] && s.Name == "Pivot" + targetNumber)) targetNumber++;
-            string targetName = "Pivot" + targetNumber;
-            sheets[activeSheetIndex].Name = targetName;
-            var pivot = new PivotDefinition { SourceSheet = sourceName, SourceRange = range,
-                GroupColumn = range.Left + headers.IndexOf(group),
-                ValueColumn = range.Left + headers.IndexOf(value),
-                Aggregate = aggregate, TargetSheet = targetName };
-            pivots.Add(pivot);
-            RefreshPivot(pivot);
-            RefreshSheetTabs();
+            ConfigurePivot(null);
         }
 
         private void RefreshAllPivots()
@@ -359,69 +302,7 @@ namespace DinkCel
 
         private void RefreshPivot(PivotDefinition pivot)
         {
-            int sourceIndex = sheets.FindIndex(s => s.Name == pivot.SourceSheet);
-            int targetIndex = sheets.FindIndex(s => s.Name == pivot.TargetSheet);
-            if (sourceIndex < 0 || targetIndex < 0) return;
-            SaveActiveSheet();
-            SheetState source = sheets[sourceIndex];
-            var engine = new FormulaEngine((r, c) => StateRaw(source, r, c),
-                (name, r, c) =>
-                {
-                    SheetState other = sheets.FirstOrDefault(s =>
-                        string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
-                    return other == null ? null : StateRaw(other, r, c);
-                }, source.Name, RowCount, ColumnCount, name =>
-                {
-                    NamedRange named = namedRanges.FirstOrDefault(n =>
-                        string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase));
-                    return named == null ? null : new FormulaNamedRange
-                    { Sheet = named.Sheet, FirstRow = named.Range.Top, FirstColumn = named.Range.Left,
-                        LastRow = named.Range.Bottom - 1, LastColumn = named.Range.Right - 1 };
-                });
-            var groups = new SortedDictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
-            for (int r = pivot.SourceRange.Top + 1; r < pivot.SourceRange.Bottom; r++)
-            {
-                CellState groupCell, valueCell;
-                string group = source.Cells.TryGetValue(r * ColumnCount + pivot.GroupColumn, out groupCell) ?
-                    Convert.ToString(groupCell.Value) ?? "" : "";
-                if (group.StartsWith("=", StringComparison.Ordinal))
-                    group = engine.Display(r, pivot.GroupColumn);
-                if (group.Length == 0) continue;
-                double amount = 0;
-                if (pivot.Aggregate == "Count") amount = 1;
-                else if (source.Cells.TryGetValue(r * ColumnCount + pivot.ValueColumn, out valueCell))
-                {
-                    string raw = Convert.ToString(valueCell.Value) ?? "";
-                    if (raw.StartsWith("=", StringComparison.Ordinal)) raw = engine.Display(r, pivot.ValueColumn);
-                    double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out amount);
-                }
-                if (!groups.ContainsKey(group)) groups[group] = 0;
-                groups[group] += amount;
-            }
-            if (targetIndex != activeSheetIndex) SwitchSheet(targetIndex);
-            loading = true;
-            try
-            {
-                for (int r = 0; r < RowCount; r++)
-                    for (int c = 0; c < 2; c++) grid[c, r].Value = null;
-                grid[0, 0].Value = "Nhóm";
-                grid[1, 0].Value = pivot.Aggregate == "Count" ? "Số lượng" : "Tổng";
-                int row = 1;
-                foreach (var item in groups)
-                {
-                    if (row >= RowCount - 1) break;
-                    grid[0, row].Value = item.Key;
-                    grid[1, row].Value = item.Value.ToString(CultureInfo.InvariantCulture);
-                    row++;
-                }
-                grid[0, row].Value = "Tổng cộng";
-                grid[1, row].Value = groups.Values.Sum().ToString(CultureInfo.InvariantCulture);
-                grid[0, 0].Style.Font = new Font(grid.Font, FontStyle.Bold);
-                grid[1, 0].Style.Font = new Font(grid.Font, FontStyle.Bold);
-            }
-            finally { loading = false; }
-            Recalculate(); RecordChange(); MarkDirty(); SaveActiveSheet();
-            status.Text = "Đã làm mới " + pivot.TargetSheet;
+            RefreshPivotAdvanced(pivot);
         }
 
         private static string StateRaw(SheetState sheet, int row, int column)
