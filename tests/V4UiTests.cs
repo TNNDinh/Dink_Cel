@@ -218,6 +218,22 @@ namespace DinkCel
                 Equal(2, grid.SelectedCells.Count);
                 Equal(1, grid.CurrentCell.RowIndex);
 
+                Call(form, "SwitchSheet", 0);
+                grid[0, 0].Value = "10";
+                grid[1, 0].Value = "=A1*2";
+                grid[2, 0].Value = "=B1+1";
+                grid[3, 0].Value = "=XLOOKUP(10,A1:A1,C1:C1)";
+                Equal("21", grid[2, 0].FormattedValue);
+                Equal("21", grid[3, 0].FormattedValue);
+                var retainedEngine = (FormulaEngine)Field(form, "formulaEngine");
+                grid[0, 0].Value = "12";
+                Equal(true, object.ReferenceEquals(retainedEngine, Field(form, "formulaEngine")));
+                Equal("25", grid[2, 0].FormattedValue);
+                Equal("#N/A", grid[3, 0].FormattedValue);
+                Call(form, "SwitchSheet", 1);
+                grid[1, 0].Value = "=Sheet1!C1";
+                Equal("25", grid[1, 0].FormattedValue);
+
             }
             Console.WriteLine("v0.4 UI: navigation, ranges, formula bar, fill, clipboard, undo passed.");
         }

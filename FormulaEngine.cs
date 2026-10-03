@@ -15,7 +15,7 @@ namespace DinkCel
         public int LastColumn;
     }
 
-    internal sealed class FormulaEngine
+    internal sealed partial class FormulaEngine
     {
         private readonly Func<int, int, string> readCell;
         private readonly Func<string, int, int, string> readOtherSheet;
@@ -25,6 +25,14 @@ namespace DinkCel
         private readonly int columnCount;
         private readonly Dictionary<string, Value> cache = new Dictionary<string, Value>();
         private readonly HashSet<string> active = new HashSet<string>();
+        private readonly Dictionary<string, HashSet<string>> dependencies =
+            new Dictionary<string, HashSet<string>>();
+        private readonly Dictionary<string, HashSet<string>> dependents =
+            new Dictionary<string, HashSet<string>>();
+        private readonly List<string> calculationChain = new List<string>();
+        private readonly Stack<string> evaluationStack = new Stack<string>();
+        private readonly HashSet<string> volatileCells = new HashSet<string>();
+        private readonly Func<DateTime> nowProvider;
 
         public FormulaEngine(Func<int, int, string> readCell, int rowCount, int columnCount)
             : this(readCell, null, "", rowCount, columnCount) { }
@@ -37,6 +45,13 @@ namespace DinkCel
         public FormulaEngine(Func<int, int, string> readCell,
             Func<string, int, int, string> readOtherSheet, string currentSheet,
             int rowCount, int columnCount, Func<string, FormulaNamedRange> resolveName)
+            : this(readCell, readOtherSheet, currentSheet, rowCount, columnCount,
+                resolveName, null) { }
+
+        public FormulaEngine(Func<int, int, string> readCell,
+            Func<string, int, int, string> readOtherSheet, string currentSheet,
+            int rowCount, int columnCount, Func<string, FormulaNamedRange> resolveName,
+            Func<DateTime> nowProvider)
         {
             this.readCell = readCell;
             this.readOtherSheet = readOtherSheet;
@@ -44,6 +59,64 @@ namespace DinkCel
             this.resolveName = resolveName;
             this.rowCount = rowCount;
             this.columnCount = columnCount;
+            this.nowProvider = nowProvider ?? delegate { return DateTime.Now; };
+        }
+
+        public IList<string> CalculationChain
+        { get { return calculationChain.AsReadOnly(); } }
+
+        public IList<string> DependenciesFor(string sheet, int row, int column)
+        {
+            HashSet<string> items;
+            return dependencies.TryGetValue(CellKey(sheet, row, column), out items) ?
+                new List<string>(items).AsReadOnly() : new List<string>().AsReadOnly();
+        }
+
+        public void InvalidateAll()
+        {
+            cache.Clear(); active.Clear(); dependencies.Clear(); dependents.Clear();
+            calculationChain.Clear(); evaluationStack.Clear(); volatileCells.Clear();
+        }
+
+        public void Invalidate(string sheet, int row, int column)
+        {
+            var pending = new Stack<string>();
+            var affected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            pending.Push(CellKey(sheet, row, column));
+            foreach (string key in volatileCells) pending.Push(key);
+            while (pending.Count > 0)
+            {
+                string key = pending.Pop();
+                if (!affected.Add(key)) continue;
+                HashSet<string> users;
+                if (dependents.TryGetValue(key, out users))
+                    foreach (string user in users) pending.Push(user);
+            }
+            foreach (string key in affected)
+            {
+                cache.Remove(key); volatileCells.Remove(key);
+                HashSet<string> inputs;
+                if (dependencies.TryGetValue(key, out inputs))
+                    foreach (string input in inputs)
+                    {
+                        HashSet<string> users;
+                        if (dependents.TryGetValue(input, out users)) users.Remove(key);
+                    }
+                dependencies.Remove(key);
+                dependents.Remove(key);
+            }
+            calculationChain.RemoveAll(affected.Contains);
+        }
+
+        private static string CellKey(string sheet, int row, int column)
+        {
+            return (sheet ?? "").ToUpperInvariant() + "!" + ColumnName(column + 1) +
+                (row + 1).ToString(CultureInfo.InvariantCulture);
+        }
+
+        private void MarkVolatile()
+        {
+            if (evaluationStack.Count > 0) volatileCells.Add(evaluationStack.Peek());
         }
 
         public string Display(int row, int column)
@@ -71,7 +144,19 @@ namespace DinkCel
         {
             if (row < 0 || row >= rowCount || column < 0 || column >= columnCount)
                 return Value.Error("#REF!");
-            string key = sheet.ToUpperInvariant() + "!" + (row * columnCount + column);
+            string key = CellKey(sheet, row, column);
+            if (evaluationStack.Count > 0)
+            {
+                string parent = evaluationStack.Peek();
+                HashSet<string> inputs;
+                if (!dependencies.TryGetValue(parent, out inputs))
+                    dependencies[parent] = inputs = new HashSet<string>();
+                inputs.Add(key);
+                HashSet<string> users;
+                if (!dependents.TryGetValue(key, out users))
+                    dependents[key] = users = new HashSet<string>();
+                users.Add(parent);
+            }
             Value cached;
             if (cache.TryGetValue(key, out cached))
                 return cached;
@@ -79,16 +164,22 @@ namespace DinkCel
                 return Value.Error("#CYCLE!");
 
             active.Add(key);
+            evaluationStack.Push(key);
             Value result;
+            bool formula = false;
             try
             {
                 string raw = string.Equals(sheet, currentSheet, StringComparison.OrdinalIgnoreCase) ?
                     readCell(row, column) : readOtherSheet == null ? null : readOtherSheet(sheet, row, column);
-                if (raw == null) return Value.Error("#REF!");
-                if (raw.StartsWith("=", StringComparison.Ordinal))
+                if (raw == null) result = Value.Error("#REF!");
+                else if (raw.StartsWith("=", StringComparison.Ordinal))
+                {
+                    formula = true;
                     result = new Parser(this, raw.Substring(1), sheet).Parse().Evaluate(this);
+                }
                 else if (raw.Length == 0)
                     result = Value.Blank();
+                else if (IsKnownError(raw)) result = Value.Error(raw.ToUpperInvariant());
                 else
                 {
                     double number;
@@ -98,7 +189,7 @@ namespace DinkCel
             }
             catch (FormatException)
             {
-                result = Value.Error("#ERROR!");
+                result = Value.Error("#VALUE!");
             }
             catch (OverflowException)
             {
@@ -106,10 +197,19 @@ namespace DinkCel
             }
             finally
             {
+                evaluationStack.Pop();
                 active.Remove(key);
             }
             cache[key] = result;
+            if (formula) calculationChain.Add(key);
             return result;
+        }
+
+        private static bool IsKnownError(string text)
+        {
+            return text == "#N/A" || text == "#VALUE!" || text == "#REF!" ||
+                text == "#DIV/0!" || text == "#NAME?" || text == "#NUM!" ||
+                text == "#CYCLE!";
         }
 
         private static bool TryParseNumber(string text, out double number)
@@ -141,10 +241,14 @@ namespace DinkCel
             public double Number;
             public string Text = "";
             public List<Value> Items;
+            public int Rows;
+            public int Columns;
 
             public static Value Blank() { return new Value { Kind = ValueKind.Blank }; }
             public static Value Numeric(double number)
             {
+                if (Double.IsNaN(number) || Double.IsInfinity(number))
+                    return Error("#NUM!");
                 return new Value { Kind = ValueKind.Number, Number = number };
             }
             public static Value String(string text)
@@ -155,9 +259,10 @@ namespace DinkCel
             {
                 return new Value { Kind = ValueKind.Error, Text = text };
             }
-            public static Value Range(List<Value> items)
+            public static Value Range(List<Value> items, int rows, int columns)
             {
-                return new Value { Kind = ValueKind.Range, Items = items };
+                return new Value { Kind = ValueKind.Range, Items = items,
+                    Rows = rows, Columns = columns };
             }
         }
 
@@ -222,6 +327,10 @@ namespace DinkCel
             }
             public override Value Evaluate(FormulaEngine engine)
             {
+                if (firstRow < 0 || lastRow < 0 || firstColumn < 0 || lastColumn < 0 ||
+                    firstRow >= engine.rowCount || lastRow >= engine.rowCount ||
+                    firstColumn >= engine.columnCount || lastColumn >= engine.columnCount)
+                    return Value.Error("#REF!");
                 var items = new List<Value>();
                 for (int row = Math.Min(firstRow, lastRow);
                     row <= Math.Max(firstRow, lastRow); row++)
@@ -230,7 +339,8 @@ namespace DinkCel
                         column <= Math.Max(firstColumn, lastColumn); column++)
                         items.Add(engine.EvaluateCell(sheet, row, column));
                 }
-                return Value.Range(items);
+                return Value.Range(items, Math.Abs(lastRow - firstRow) + 1,
+                    Math.Abs(lastColumn - firstColumn) + 1);
             }
         }
 
@@ -311,7 +421,7 @@ namespace DinkCel
                         : Value.Numeric(a.Number / b.Number);
                 if (operation == "^")
                     return Value.Numeric(Math.Pow(a.Number, b.Number));
-                return Value.Error("#ERROR!");
+                return Value.Error("#VALUE!");
             }
         }
 
@@ -326,10 +436,12 @@ namespace DinkCel
             }
             public override Value Evaluate(FormulaEngine engine)
             {
+                Value advanced = engine.EvaluateAdvanced(name, arguments);
+                if (advanced != null) return advanced;
                 if (name == "IF")
                 {
                     if (arguments.Count != 3)
-                        return Value.Error("#ERROR!");
+                        return Value.Error("#VALUE!");
                     Value condition = arguments[0].Evaluate(engine);
                     if (condition.Kind == ValueKind.Error)
                         return condition;
@@ -360,7 +472,7 @@ namespace DinkCel
                     name == "POWER" || name == "MOD")
                 {
                     int required = name == "ROUND" || name == "ROUNDUP" || name == "ROUNDDOWN" || name == "POWER" || name == "MOD" ? 2 : 1;
-                    if (arguments.Count != required) return Value.Error("#ERROR!");
+                    if (arguments.Count != required) return Value.Error("#VALUE!");
                     Value a = AsNumber(arguments[0].Evaluate(engine));
                     if (a.Kind == ValueKind.Error) return a;
                     Value b = required == 2 ? AsNumber(arguments[1].Evaluate(engine)) : Value.Numeric(0);
@@ -381,7 +493,7 @@ namespace DinkCel
                 if (name == "LEN" || name == "UPPER" || name == "LOWER" || name == "TRIM" || name == "LEFT" || name == "RIGHT")
                 {
                     int required = name == "LEFT" || name == "RIGHT" ? 2 : 1;
-                    if (arguments.Count != required) return Value.Error("#ERROR!");
+                    if (arguments.Count != required) return Value.Error("#VALUE!");
                     Value a = arguments[0].Evaluate(engine);
                     if (a.Kind == ValueKind.Error) return a;
                     string value = a.Kind == ValueKind.Number ? a.Number.ToString(CultureInfo.InvariantCulture) : a.Text;
@@ -410,7 +522,7 @@ namespace DinkCel
                 }
                 if (name == "COUNTIF" || name == "SUMIF")
                 {
-                    if (arguments.Count < 2 || arguments.Count > (name == "SUMIF" ? 3 : 2)) return Value.Error("#ERROR!");
+                    if (arguments.Count < 2 || arguments.Count > (name == "SUMIF" ? 3 : 2)) return Value.Error("#VALUE!");
                     Value source = arguments[0].Evaluate(engine);
                     Value criterion = arguments[1].Evaluate(engine);
                     if (source.Kind == ValueKind.Error) return source;
@@ -424,7 +536,7 @@ namespace DinkCel
                     for (int i = 0; i < items.Count; i++)
                     {
                         if (items[i].Kind == ValueKind.Error) return items[i];
-                        if (!MatchesCriterion(items[i], criterion)) continue;
+                        if (!engine.CriteriaMatches(items[i], criterion)) continue;
                         if (name == "COUNTIF") matchedSum++;
                         else if (sumItems[i].Kind == ValueKind.Number) matchedSum += sumItems[i].Number;
                     }
@@ -627,10 +739,27 @@ namespace DinkCel
                     return new NameNode(word);
                 if (Take(":"))
                 {
-                    string end = ReadWord();
+                    SkipSpaces();
+                    string endSheet = explicitSheet ?? sheet;
+                    string end;
+                    if (position < source.Length && source[position] == '\'')
+                    {
+                        endSheet = ReadSheetName();
+                        Require("!");
+                        end = ReadWord();
+                    }
+                    else
+                    {
+                        end = ReadWord();
+                        if (Take("!"))
+                        { endSheet = end; end = ReadWord(); }
+                    }
                     int lastRow, lastColumn;
                     if (!TryAddress(end, out lastRow, out lastColumn))
                         throw new FormatException();
+                    if (!string.Equals(endSheet, explicitSheet ?? sheet,
+                        StringComparison.OrdinalIgnoreCase))
+                        return new LiteralNode(Value.Error("#REF!"));
                     return new RangeNode(explicitSheet ?? sheet, row, column, lastRow, lastColumn);
                 }
                 return new ReferenceNode(explicitSheet ?? sheet, row, column);
@@ -757,8 +886,7 @@ namespace DinkCel
                     return false;
                 column = value - 1;
                 row = number - 1;
-                return column >= 0 && column < engine.columnCount &&
-                    row >= 0 && row < engine.rowCount;
+                return column >= 0;
             }
         }
 

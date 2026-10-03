@@ -12,7 +12,15 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.4.0 — Excel Editing
+## Tính năng v0.5.0 — Formula Engine
+
+- **Tra cứu:** `XLOOKUP`, `VLOOKUP`, `HLOOKUP`, `INDEX`, `MATCH` với khớp chính xác và gần đúng; `XLOOKUP` hỗ trợ tìm từ cuối và ký tự đại diện.
+- **Điều kiện:** `IFERROR`, `IFNA`, `SUMIFS`, `COUNTIFS`, `AVERAGEIF`, `AVERAGEIFS`, `MAXIFS`, `MINIFS`; `COUNTIF` và `SUMIF` hỗ trợ điều kiện so sánh, ký tự đại diện.
+- **Ngày giờ và kiểm tra:** `DATE`, `TIME`, `TODAY`, `NOW`, `YEAR`, `MONTH`, `DAY`, `WEEKDAY`, `WEEKNUM`, `EOMONTH`, `ISBLANK`, `ISNUMBER`, `ISTEXT`, `ISERROR`, `ISNA`.
+- **Tính toán:** mã lỗi `#N/A`, `#VALUE!`, `#REF!`, `#DIV/0!`, `#NAME?`, `#NUM!`; vòng tham chiếu hiển thị `#CYCLE!`. Quan hệ phụ thuộc và thứ tự tính được theo dõi để chỉ tính lại công thức liên quan khi sửa một ô.
+- **Tham chiếu:** công thức liên sheet hỗ trợ ô và vùng, kể cả tên sheet có dấu cách. Tham chiếu tương đối, tuyệt đối và hỗn hợp (`$A1`, `A$1`, `$A$1`) được giữ đúng khi kéo điền.
+
+### Tính năng từ v0.4.0 — Excel Editing
 
 - **Điều hướng:** Ctrl + mũi tên nhảy tới mép vùng dữ liệu; giữ Shift để mở rộng vùng chọn. Shift + mũi tên chỉnh vùng chọn từng ô. Ctrl + Home/End tới đầu bảng hoặc ô cuối có dữ liệu. F2 sửa ô; Enter, Shift + Enter, Tab và Shift + Tab chuyển ô; Esc hủy sửa ô hoặc thao tác cắt.
 - **Chọn ô:** Ctrl + Space chọn cả cột, Shift + Space chọn cả hàng, Ctrl + A chọn toàn sheet. Giữ Ctrl và nhấp ô để chọn nhiều vùng không liền nhau. Name Box nhận địa chỉ (`A1`), vùng (`A1:C5`), nhiều vùng (`A1:C5,E1:E3`) hoặc tên vùng đã đặt.
@@ -95,7 +103,7 @@ File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx`, `.xls` và `.o
 - WorkbookFeatures.cs, SpreadsheetV3Ui.cs và SpreadsheetOutputUi.cs: metadata và giao diện v0.3.
 - SpreadsheetEditingUi.cs: điều hướng, Name Box, Formula Bar, vùng chọn, Fill và clipboard v0.4.
 - vendor/: thư viện NPOI, SharpZipLib, PDFsharp cùng giấy phép; nội dung giấy phép được nhúng trong `.exe` và xem qua menu **Trợ giúp**.
-- FormulaEngine.cs: phân tích và tính công thức, dịch tham chiếu khi kéo ô.
+- FormulaEngine.cs và FormulaEngineV5.cs: phân tích, tính công thức, theo dõi quan hệ phụ thuộc và dịch tham chiếu khi kéo ô.
 - ThemePalette.cs: các mẫu màu và hộp chọn giao diện.
 - build.cmd: lệnh build lại ứng dụng.
 - test.cmd: kiểm tra công thức, CSV, nhiều sheet, `.xlsx`, `.xls`, `.ods`, PDF và giao diện v0.3.

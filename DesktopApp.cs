@@ -176,6 +176,7 @@ namespace DinkCel
         private readonly ToolStripButton underlineButton = new ToolStripButton("U");
         private readonly Dictionary<int, string> calculated =
             new Dictionary<int, string>();
+        private FormulaEngine formulaEngine;
         private readonly List<SheetState> undoHistory = new List<SheetState>();
         private readonly List<SheetState> redoHistory = new List<SheetState>();
         private readonly List<SheetHistory> sheetHistories = new List<SheetHistory>();
@@ -523,7 +524,7 @@ namespace DinkCel
                     if (e.RowIndex >= 0 && e.ColumnIndex >= 0 &&
                         !ValidateCellChange(e.RowIndex, e.ColumnIndex)) return;
                     RecordChange();
-                    Recalculate();
+                    Recalculate(e.RowIndex, e.ColumnIndex);
                     MarkDirty();
                     UpdateSelection();
                 }
@@ -613,8 +614,15 @@ namespace DinkCel
 
         private void Recalculate()
         {
+            formulaEngine = null;
+            Recalculate(-1, -1);
+        }
+
+        private void Recalculate(int changedRow, int changedColumn)
+        {
             calculated.Clear();
-            var engine = new FormulaEngine(delegate(int row, int column)
+            if (formulaEngine == null)
+                formulaEngine = new FormulaEngine(delegate(int row, int column)
             {
                 return Convert.ToString(grid[column, row].Value) ?? "";
             }, delegate(string name, int row, int column)
@@ -641,6 +649,9 @@ namespace DinkCel
                         LastColumn = named.Range.Right - 1
                     };
                 });
+            else if (changedRow >= 0 && changedColumn >= 0)
+                formulaEngine.Invalidate(sheets[activeSheetIndex].Name,
+                    changedRow, changedColumn);
             for (int row = 0; row < RowCount; row++)
             {
                 for (int column = 0; column < ColumnCount; column++)
@@ -648,7 +659,7 @@ namespace DinkCel
                     string raw = Convert.ToString(grid[column, row].Value) ?? "";
                     if (raw.StartsWith("=", StringComparison.Ordinal))
                         calculated[row * ColumnCount + column] =
-                            engine.Display(row, column);
+                            formulaEngine.Display(row, column);
                 }
             }
             grid.Invalidate();
