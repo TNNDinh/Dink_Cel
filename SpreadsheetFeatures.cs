@@ -68,9 +68,16 @@ namespace DinkCel
             if (fileMenu != null)
             {
                 fileMenu.DropDownItems.Add(new ToolStripSeparator());
+                AddMenuItem(fileMenu, "Thiết lập trang in...", Keys.None, ConfigurePageSetup);
+                AddMenuItem(fileMenu, "Đặt vùng in từ lựa chọn", Keys.None, SetPrintArea);
+                AddMenuItem(fileMenu, "Bỏ vùng in", Keys.None, ClearPrintArea);
+                AddMenuItem(fileMenu, "Ngắt trang trước hàng này", Keys.None, AddPageBreak);
+                AddMenuItem(fileMenu, "Bỏ ngắt trang tại hàng này", Keys.None, RemovePageBreak);
                 AddMenuItem(fileMenu, "Xem trước khi in...", Keys.None, PreviewPrint);
                 AddMenuItem(fileMenu, "In...", Keys.Control | Keys.P, PrintWorkbook);
+                AddMenuItem(fileMenu, "In vùng chọn...", Keys.None, PrintSelection);
                 AddMenuItem(fileMenu, "Xuất PDF...", Keys.None, ExportPdf);
+                AddMenuItem(fileMenu, "Xuất PDF vùng chọn...", Keys.None, ExportPdfSelection);
             }
         }
 
@@ -227,7 +234,8 @@ namespace DinkCel
             copy.Merges.AddRange(source.Merges);
             copy.Rules.AddRange(source.Rules);
             copy.Tables.AddRange(source.Tables.Select(t => t.Copy()));
-            copy.Charts.AddRange(source.Charts);
+            copy.Charts.AddRange(source.Charts.Select(c => c.Copy()));
+            copy.Print = source.Print.Copy();
             copy.Validations.AddRange(source.Validations);
             sheets.Insert(index + 1, copy);
             sheetHistories.Insert(index + 1, new SheetHistory());
@@ -435,7 +443,8 @@ namespace DinkCel
             state.Rules.AddRange(source.Rules);
             state.Filters.AddRange(source.Filters);
             state.Tables.AddRange(source.Tables.Select(t => t.Copy()));
-            state.Charts.AddRange(source.Charts);
+            state.Charts.AddRange(source.Charts.Select(c => c.Copy()));
+            state.Print = source.Print.Copy();
             state.Validations.AddRange(source.Validations);
             for (int r = 0; r < MaxRowCount; r++) state.RowHeights[r] = source.RowHeights.ContainsKey(r) ? source.RowHeights[r] : 27;
             for (int c = 0; c < ColumnCount; c++) state.ColumnWidths[c] = source.ColumnWidths.ContainsKey(c) ? source.ColumnWidths[c] : 120;
@@ -471,7 +480,8 @@ namespace DinkCel
             result.Rules.AddRange(source.Rules);
             result.Filters.AddRange(source.Filters);
             result.Tables.AddRange(source.Tables.Select(t => t.Copy()));
-            result.Charts.AddRange(source.Charts);
+            result.Charts.AddRange(source.Charts.Select(c => c.Copy()));
+            result.Print = source.Print.Copy();
             result.Validations.AddRange(source.Validations);
             for (int r = 0; r < RowCount; r++) if (source.RowHeights[r] != 27) result.RowHeights[r] = source.RowHeights[r];
             for (int c = 0; c < ColumnCount; c++) if (source.ColumnWidths[c] != 120) result.ColumnWidths[c] = source.ColumnWidths[c];

@@ -104,6 +104,7 @@ namespace DinkCel
         public readonly List<FilterCriterion> Filters = new List<FilterCriterion>();
         public readonly List<TableDefinition> Tables = new List<TableDefinition>();
         public readonly List<ChartDefinition> Charts = new List<ChartDefinition>();
+        public PrintSettings Print = new PrintSettings();
         public readonly List<ValidationRule> Validations = new List<ValidationRule>();
         public int FreezeRow;
         public int FreezeColumn;
@@ -121,6 +122,7 @@ namespace DinkCel
         public readonly List<FilterCriterion> Filters = new List<FilterCriterion>();
         public readonly List<TableDefinition> Tables = new List<TableDefinition>();
         public readonly List<ChartDefinition> Charts = new List<ChartDefinition>();
+        public PrintSettings Print = new PrintSettings();
         public readonly List<ValidationRule> Validations = new List<ValidationRule>();
         public int FreezeRow;
         public int FreezeColumn;
@@ -185,6 +187,7 @@ namespace DinkCel
         private readonly List<FilterCriterion> activeFilters = new List<FilterCriterion>();
         private readonly List<TableDefinition> tables = new List<TableDefinition>();
         private readonly List<ChartDefinition> charts = new List<ChartDefinition>();
+        private PrintSettings printSettings = new PrintSettings();
         private readonly List<ValidationRule> validations = new List<ValidationRule>();
         private readonly List<NamedRange> namedRanges = new List<NamedRange>();
         private readonly List<PivotDefinition> pivots = new List<PivotDefinition>();
@@ -1130,7 +1133,8 @@ namespace DinkCel
             state.Rules.AddRange(conditionalRules);
             state.Filters.AddRange(activeFilters);
             state.Tables.AddRange(tables.Select(t => t.Copy()));
-            state.Charts.AddRange(charts);
+            state.Charts.AddRange(charts.Select(c => c.Copy()));
+            state.Print = printSettings.Copy();
             state.Validations.AddRange(validations);
             state.FreezeRow = freezeRow;
             state.FreezeColumn = freezeColumn;
@@ -1276,7 +1280,8 @@ namespace DinkCel
                 conditionalRules.AddRange(state.Rules);
                 activeFilters.Clear(); activeFilters.AddRange(state.Filters);
                 tables.Clear(); tables.AddRange(state.Tables.Select(t => t.Copy()));
-                charts.Clear(); charts.AddRange(state.Charts);
+                charts.Clear(); charts.AddRange(state.Charts.Select(c => c.Copy()));
+                printSettings = state.Print.Copy();
                 validations.Clear(); validations.AddRange(state.Validations);
                 freezeRow = state.FreezeRow;
                 freezeColumn = state.FreezeColumn;
@@ -1306,6 +1311,7 @@ namespace DinkCel
             UpdateTitle();
             UpdateSelection();
             grid.Invalidate();
+            RefreshChartOverlays();
         }
 
         private void Undo()
@@ -1416,6 +1422,8 @@ namespace DinkCel
             conditionalRules.Clear();
             activeFilters.Clear();
             tables.Clear(); charts.Clear(); validations.Clear();
+            printSettings = new PrintSettings();
+            RefreshChartOverlays();
             namedRanges.Clear(); pivots.Clear();
             freezeRow = freezeColumn = 0;
             filterColumn = -1;
@@ -1480,6 +1488,8 @@ namespace DinkCel
                         sheets.Add(new SheetState { Name = "Sheet1" });
                     int neededRows = sheets.SelectMany(s => s.Cells.Keys).DefaultIfEmpty(0).Max() / ColumnCount + 1;
                     neededRows = Math.Max(neededRows, sheets.SelectMany(s => s.Tables).Select(t => t.Range.Bottom).DefaultIfEmpty(0).Max());
+                    neededRows = Math.Max(neededRows, sheets.SelectMany(s => s.Charts)
+                        .Select(c => Math.Max(c.Range.Bottom, c.Placement.Bottom)).DefaultIfEmpty(0).Max());
                     neededRows = Math.Max(neededRows, namedRanges.Select(n => n.Range.Bottom).DefaultIfEmpty(0).Max());
                     EnsureRowCapacity(Math.Max(200, Math.Min(MaxRowCount, neededRows + 100)));
                     activeSheetIndex = sheets.FindIndex(s => !s.Hidden);

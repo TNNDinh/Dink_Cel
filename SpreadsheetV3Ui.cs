@@ -202,13 +202,17 @@ namespace DinkCel
             Rectangle range = SelectionRange(true);
             if (range.Width < 2 || range.Height < 2)
             { MessageBox.Show(this, "Biểu đồ cần cột nhãn, cột số và ít nhất một hàng dữ liệu."); return; }
-            string kind = ChooseOption("Loại biểu đồ", new[] { "Column", "Line", "Pie" });
+            string kind = ChooseOption("Loại biểu đồ", new[] { "Column", "Line", "Pie", "Bar",
+                "Area", "Scatter", "Stacked", "100% Stacked", "Combo" });
             if (kind == null) return;
             string title = Prompt("Tiêu đề biểu đồ", "Biểu đồ " + (charts.Count + 1));
             if (title == null) return;
-            var definition = new ChartDefinition { Title = title, Kind = kind, Range = range };
+            var definition = new ChartDefinition { Title = title, Kind = kind, Range = range,
+                Placement = new Rectangle(Math.Min(ColumnCount - 8, range.Right + 1), range.Top, 8, 14) };
+            EnsureRowCapacity(Math.Min(MaxRowCount, definition.Placement.Bottom));
             charts.Add(definition);
             RecordChange(); MarkDirty();
+            RefreshChartOverlays();
             ShowChart(definition);
         }
 
@@ -226,10 +230,29 @@ namespace DinkCel
                 ForeColor = theme.Text })
             {
                 var chart = BuildChart(definition);
+                var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42,
+                    FlowDirection = FlowDirection.LeftToRight };
+                var edit = DinkDesign.Button("Chỉnh biểu đồ...", delegate { });
+                edit.Click += delegate
+                {
+                    if (!ConfigureChart(definition)) return;
+                    form.Text = definition.Title;
+                    form.Controls.Remove(chart); chart.Dispose();
+                    chart = BuildChart(definition);
+                    form.Controls.Add(chart); chart.BringToFront();
+                    RefreshChartOverlays();
+                };
+                var copy = DinkDesign.Button("Sao chép", delegate { });
+                copy.Click += delegate
+                {
+                    var duplicate = definition.Copy();
+                    duplicate.Title += " Copy";
+                    duplicate.Placement.Offset(1, 2);
+                    charts.Add(duplicate); RecordChange(); MarkDirty();
+                    RefreshChartOverlays();
+                    status.Text = "Đã sao chép biểu đồ " + duplicate.Title;
+                };
                 var save = DinkDesign.Button("Lưu PNG...", delegate { });
-                save.AutoSize = false;
-                save.Dock = DockStyle.Bottom;
-                save.Height = 36;
                 save.BackColor = theme.AccentSoft;
                 save.ForeColor = theme.Text;
                 save.Click += delegate
@@ -238,54 +261,16 @@ namespace DinkCel
                         if (dialog.ShowDialog(form) == DialogResult.OK)
                             chart.SaveImage(dialog.FileName, ChartImageFormat.Png);
                 };
-                form.Controls.Add(chart); form.Controls.Add(save);
+                actions.Controls.Add(edit); actions.Controls.Add(copy); actions.Controls.Add(save);
+                form.Controls.Add(chart); form.Controls.Add(actions);
                 form.ShowDialog(this);
             }
         }
 
         private Chart BuildChart(ChartDefinition definition)
         {
-            var chart = new Chart { Dock = DockStyle.Fill, BackColor = theme.Sheet,
-                ForeColor = theme.Text };
-            chart.ChartAreas.Add(new ChartArea("Main"));
-            chart.Legends.Add(new Legend("Legend"));
-            chart.Titles.Add(definition.Title);
-            chart.ChartAreas[0].BackColor = theme.Sheet;
-            chart.ChartAreas[0].AxisX.LabelStyle.ForeColor = theme.Muted;
-            chart.ChartAreas[0].AxisY.LabelStyle.ForeColor = theme.Muted;
-            chart.ChartAreas[0].AxisX.LineColor = theme.Border;
-            chart.ChartAreas[0].AxisY.LineColor = theme.Border;
-            chart.ChartAreas[0].AxisX.MajorGrid.LineColor = theme.GridLine;
-            chart.ChartAreas[0].AxisY.MajorGrid.LineColor = theme.GridLine;
-            chart.Legends[0].BackColor = theme.Sheet;
-            chart.Legends[0].ForeColor = theme.Text;
-            chart.Titles[0].ForeColor = theme.Text;
-            Rectangle range = definition.Range;
-            for (int c = range.Left + 1; c < range.Right; c++)
-            {
-                if (definition.Kind == "Pie" && c > range.Left + 1) break;
-                string seriesName = Convert.ToString(grid[c, range.Top].Value);
-                if (string.IsNullOrEmpty(seriesName)) seriesName = grid.Columns[c].HeaderText;
-                var series = new Series(seriesName) { ChartType = definition.Kind == "Line" ?
-                    SeriesChartType.Line : definition.Kind == "Pie" ? SeriesChartType.Pie : SeriesChartType.Column };
-                Color[] chartColors = { theme.Accent, theme.Logo, theme.Dark ? Color.Turquoise : Color.Teal,
-                    theme.Dark ? Color.Orange : Color.DarkOrange, theme.Muted };
-                series.Color = chartColors[(c - range.Left - 1) % chartColors.Length];
-                for (int r = range.Top + 1; r < range.Bottom; r++)
-                {
-                    string label = Convert.ToString(grid[range.Left, r].FormattedValue) ?? "";
-                    string raw = Convert.ToString(grid[c, r].FormattedValue) ?? "";
-                    double value;
-                    if (double.TryParse(raw, NumberStyles.Any, CultureInfo.CurrentCulture, out value) ||
-                        double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out value))
-                        series.Points.AddXY(label, value);
-                }
-                if (definition.Kind == "Pie")
-                    for (int point = 0; point < series.Points.Count; point++)
-                        series.Points[point].Color = chartColors[point % chartColors.Length];
-                chart.Series.Add(series);
-            }
-            return chart;
+            return ChartRendering.Build(definition, (r, c) =>
+                Convert.ToString(grid[c, r].FormattedValue) ?? "", theme.Sheet, theme.Text, theme.Accent);
         }
 
         private void CreatePivot()

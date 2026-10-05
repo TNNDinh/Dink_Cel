@@ -141,6 +141,38 @@ namespace DinkCel
                     var document = ReadXml(zip, sheetPart);
                     var sheet = new SheetSnapshot { Name = (string)sheetInfo.Attribute("name") ?? "Sheet",
                         Hidden = string.Equals((string)sheetInfo.Attribute("state"), "hidden", StringComparison.OrdinalIgnoreCase) };
+                    XElement setup = document.Root.Element(S + "pageSetup");
+                    if (setup != null)
+                    {
+                        sheet.Print.Landscape = (string)setup.Attribute("orientation") != "portrait";
+                        int paper = (int?)setup.Attribute("paperSize") ?? 9;
+                        sheet.Print.Paper = paper == 1 ? "Letter" : paper == 5 ? "Legal" :
+                            paper == 8 ? "A3" : "A4";
+                        sheet.Print.Scale = (int?)setup.Attribute("scale") ?? 100;
+                        sheet.Print.FitToOnePage = (int?)setup.Attribute("fitToWidth") == 1 &&
+                            (int?)setup.Attribute("fitToHeight") == 1;
+                    }
+                    XElement margins = document.Root.Element(S + "pageMargins");
+                    if (margins != null)
+                    {
+                        sheet.Print.MarginLeft = (int)Math.Round(((double?)margins.Attribute("left") ?? .5) * 100);
+                        sheet.Print.MarginRight = (int)Math.Round(((double?)margins.Attribute("right") ?? .5) * 100);
+                        sheet.Print.MarginTop = (int)Math.Round(((double?)margins.Attribute("top") ?? .6) * 100);
+                        sheet.Print.MarginBottom = (int)Math.Round(((double?)margins.Attribute("bottom") ?? .6) * 100);
+                    }
+                    XElement printOptions = document.Root.Element(S + "printOptions");
+                    if (printOptions != null)
+                        sheet.Print.Gridlines = (bool?)printOptions.Attribute("gridLines") ?? false;
+                    XElement headerFooter = document.Root.Element(S + "headerFooter");
+                    if (headerFooter != null)
+                    {
+                        sheet.Print.Header = ((string)headerFooter.Element(S + "oddHeader") ?? "")
+                            .Replace("&C", "").Replace("&L", "").Replace("&R", "");
+                        sheet.Print.Footer = ((string)headerFooter.Element(S + "oddFooter") ?? "")
+                            .Replace("&C", "").Replace("&L", "").Replace("&R", "");
+                    }
+                    foreach (XElement entry in document.Descendants(S + "rowBreaks").Elements(S + "brk"))
+                    { int row = (int?)entry.Attribute("id") ?? -1; if (row > 0 && row < rows) sheet.Print.PageBreakRows.Add(row); }
                     string tabRgb = (string)document.Descendants(S + "tabColor").Select(e => e.Attribute("rgb")).FirstOrDefault();
                     if (!string.IsNullOrEmpty(tabRgb) && tabRgb.Length >= 6)
                         sheet.TabColor = ColorTranslator.FromHtml("#" + tabRgb.Substring(tabRgb.Length - 6));
@@ -426,7 +458,25 @@ namespace DinkCel
                                 if (!chartPaths.ContainsKey(chartId) || zip.GetEntry(chartPaths[chartId]) == null) continue;
                                 ChartDefinition definition = XlsxCharts.ParseChart(
                                     ReadXml(zip, chartPaths[chartId]), columns, rows);
-                                if (definition != null) sheet.Charts.Add(definition);
+                                if (definition != null)
+                                {
+                                    XElement anchor = chartRef.Ancestors(XlsxCharts.SpreadsheetDrawing + "twoCellAnchor")
+                                        .FirstOrDefault();
+                                    if (anchor != null)
+                                    {
+                                        XElement from = anchor.Element(XlsxCharts.SpreadsheetDrawing + "from");
+                                        XElement to = anchor.Element(XlsxCharts.SpreadsheetDrawing + "to");
+                                        if (from != null && to != null)
+                                        {
+                                            int x1 = (int?)from.Element(XlsxCharts.SpreadsheetDrawing + "col") ?? 0;
+                                            int y1 = (int?)from.Element(XlsxCharts.SpreadsheetDrawing + "row") ?? 0;
+                                            int x2 = (int?)to.Element(XlsxCharts.SpreadsheetDrawing + "col") ?? x1 + 8;
+                                            int y2 = (int?)to.Element(XlsxCharts.SpreadsheetDrawing + "row") ?? y1 + 14;
+                                            definition.Placement = Rectangle.FromLTRB(x1, y1, x2, y2);
+                                        }
+                                    }
+                                    sheet.Charts.Add(definition);
+                                }
                             }
                         }
                     }
@@ -436,6 +486,25 @@ namespace DinkCel
                 foreach (var defined in book.Descendants(S + "definedName"))
                 {
                     string name = (string)defined.Attribute("name") ?? "";
+                    if (name == "_xlnm.Print_Area" || name == "_xlnm.Print_Titles")
+                    {
+                        int index = (int?)defined.Attribute("localSheetId") ?? -1;
+                        if (index < 0 || index >= result.Sheets.Count) continue;
+                        int bangIndex = defined.Value.LastIndexOf('!');
+                        if (bangIndex < 0) continue;
+                        string address = defined.Value.Substring(bangIndex + 1);
+                        if (name == "_xlnm.Print_Area")
+                            result.Sheets[index].Print.PrintArea = ParseArea(address, rows, columns);
+                        else
+                        {
+                            var match = System.Text.RegularExpressions.Regex.Match(address,
+                                @"\$?1:\$?([1-9][0-9]*)");
+                            int count;
+                            if (match.Success && int.TryParse(match.Groups[1].Value, out count))
+                                result.Sheets[index].Print.TitleRows = Math.Min(rows, count);
+                        }
+                        continue;
+                    }
                     if (name.Length == 0 || name.StartsWith("_xlnm.", StringComparison.OrdinalIgnoreCase)) continue;
                     int bang = defined.Value.LastIndexOf('!');
                     if (bang < 0) continue;
@@ -525,7 +594,8 @@ namespace DinkCel
                     WriteXml(zip, "[Content_Types].xml", new XDocument(types));
                     WriteXml(zip, "_rels/.rels", new XDocument(new XElement(P + "Relationships", new XElement(P + "Relationship", new XAttribute("Id", "rId1"), new XAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"), new XAttribute("Target", "xl/workbook.xml")))));
                     var workbookElement = new XElement(S + "workbook", new XAttribute(XNamespace.Xmlns + "r", R), sheetsElement);
-                    if (book.NamedRanges.Count > 0)
+                    if (book.NamedRanges.Count > 0 || book.Sheets.Any(s => !s.Print.PrintArea.IsEmpty ||
+                        s.Print.TitleRows > 0))
                     {
                         var definitions = new XElement(S + "definedNames");
                         foreach (NamedRange named in book.NamedRanges)
@@ -535,6 +605,21 @@ namespace DinkCel
                                 definitions.Add(new XElement(S + "definedName", new XAttribute("name", named.Name),
                                     quotedSheet + "!" + AbsoluteRangeAddress(named.Range)));
                             }
+                        for (int i = 0; i < book.Sheets.Count; i++)
+                        {
+                            SheetSnapshot sheet = book.Sheets[i];
+                            string quoted = "'" + sheet.Name.Replace("'", "''") + "'!";
+                            if (!sheet.Print.PrintArea.IsEmpty)
+                                definitions.Add(new XElement(S + "definedName",
+                                    new XAttribute("name", "_xlnm.Print_Area"),
+                                    new XAttribute("localSheetId", i),
+                                    quoted + AbsoluteRangeAddress(sheet.Print.PrintArea)));
+                            if (sheet.Print.TitleRows > 0)
+                                definitions.Add(new XElement(S + "definedName",
+                                    new XAttribute("name", "_xlnm.Print_Titles"),
+                                    new XAttribute("localSheetId", i),
+                                    quoted + "$1:$" + sheet.Print.TitleRows));
+                        }
                         workbookElement.Add(definitions);
                     }
                     WriteXml(zip, "xl/workbook.xml", new XDocument(workbookElement));
@@ -551,10 +636,17 @@ namespace DinkCel
             IList<string> tableIds, string drawingRelation)
         {
             var root = new XElement(S + "worksheet", new XAttribute(XNamespace.Xmlns + "r", R));
-            if (!sheet.TabColor.IsEmpty)
-                root.Add(new XElement(S + "sheetPr", new XElement(S + "tabColor",
-                    new XAttribute("rgb", "FF" + sheet.TabColor.R.ToString("X2") +
-                        sheet.TabColor.G.ToString("X2") + sheet.TabColor.B.ToString("X2")))));
+            if (!sheet.TabColor.IsEmpty || sheet.Print.FitToOnePage)
+            {
+                var properties = new XElement(S + "sheetPr");
+                if (!sheet.TabColor.IsEmpty)
+                    properties.Add(new XElement(S + "tabColor",
+                        new XAttribute("rgb", "FF" + sheet.TabColor.R.ToString("X2") +
+                            sheet.TabColor.G.ToString("X2") + sheet.TabColor.B.ToString("X2"))));
+                if (sheet.Print.FitToOnePage)
+                    properties.Add(new XElement(S + "pageSetUpPr", new XAttribute("fitToPage", 1)));
+                root.Add(properties);
+            }
             if (sheet.FreezeRow > 0 || sheet.FreezeColumn > 0)
                 root.Add(new XElement(S + "sheetViews", new XElement(S + "sheetView", new XAttribute("workbookViewId", 0),
                     new XElement(S + "pane", new XAttribute("xSplit", sheet.FreezeColumn), new XAttribute("ySplit", sheet.FreezeRow),
@@ -719,6 +811,34 @@ namespace DinkCel
                 }
                 entries.SetAttributeValue("count", entries.Elements().Count());
                 if (entries.HasElements) root.Add(entries);
+            }
+            PrintSettings print = sheet.Print;
+            root.Add(new XElement(S + "printOptions", new XAttribute("gridLines", print.Gridlines ? 1 : 0)));
+            root.Add(new XElement(S + "pageMargins",
+                new XAttribute("left", (print.MarginLeft / 100.0).ToString(CultureInfo.InvariantCulture)),
+                new XAttribute("right", (print.MarginRight / 100.0).ToString(CultureInfo.InvariantCulture)),
+                new XAttribute("top", (print.MarginTop / 100.0).ToString(CultureInfo.InvariantCulture)),
+                new XAttribute("bottom", (print.MarginBottom / 100.0).ToString(CultureInfo.InvariantCulture)),
+                new XAttribute("header", "0.3"), new XAttribute("footer", "0.3")));
+            root.Add(new XElement(S + "pageSetup",
+                new XAttribute("paperSize", print.Paper == "Letter" ? 1 : print.Paper == "Legal" ? 5 :
+                    print.Paper == "A3" ? 8 : 9),
+                new XAttribute("orientation", print.Landscape ? "landscape" : "portrait"),
+                new XAttribute("scale", Math.Max(10, Math.Min(400, print.Scale))),
+                new XAttribute("fitToWidth", print.FitToOnePage ? 1 : 0),
+                new XAttribute("fitToHeight", print.FitToOnePage ? 1 : 0)));
+            root.Add(new XElement(S + "headerFooter",
+                new XElement(S + "oddHeader", "&C" + print.Header),
+                new XElement(S + "oddFooter", "&C" + print.Footer)));
+            if (print.PageBreakRows.Count > 0)
+            {
+                var breaks = new XElement(S + "rowBreaks", new XAttribute("count", print.PageBreakRows.Count),
+                    new XAttribute("manualBreakCount", print.PageBreakRows.Count));
+                foreach (int row in print.PageBreakRows)
+                    breaks.Add(new XElement(S + "brk", new XAttribute("id", row),
+                        new XAttribute("min", 0), new XAttribute("max", columns - 1),
+                        new XAttribute("man", 1)));
+                root.Add(breaks);
             }
             if (!string.IsNullOrEmpty(drawingRelation))
                 root.Add(new XElement(S + "drawing", new XAttribute(R + "id", drawingRelation)));

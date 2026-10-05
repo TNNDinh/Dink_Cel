@@ -55,6 +55,53 @@ namespace DinkCel
         public string Title = "Chart";
         public string Kind = "Column";
         public Rectangle Range;
+        public Rectangle Placement;
+        public string AxisTitleX = "";
+        public string AxisTitleY = "";
+        public bool Legend = true;
+        public bool DataLabels;
+        public bool Gridlines = true;
+        public readonly List<int> SeriesColumns = new List<int>();
+        public readonly Dictionary<int, string> SeriesNames = new Dictionary<int, string>();
+        public readonly Dictionary<int, Color> SeriesColors = new Dictionary<int, Color>();
+
+        public ChartDefinition Copy()
+        {
+            var copy = new ChartDefinition { Title = Title, Kind = Kind, Range = Range,
+                Placement = Placement, AxisTitleX = AxisTitleX, AxisTitleY = AxisTitleY,
+                Legend = Legend, DataLabels = DataLabels, Gridlines = Gridlines };
+            copy.SeriesColumns.AddRange(SeriesColumns);
+            foreach (var entry in SeriesNames) copy.SeriesNames[entry.Key] = entry.Value;
+            foreach (var entry in SeriesColors) copy.SeriesColors[entry.Key] = entry.Value;
+            return copy;
+        }
+    }
+
+    internal sealed class PrintSettings
+    {
+        public Rectangle PrintArea;
+        public bool Landscape = true;
+        public string Paper = "A4";
+        public int MarginLeft = 50, MarginRight = 50, MarginTop = 60, MarginBottom = 60;
+        public int Scale = 100;
+        public bool FitToOnePage;
+        public int TitleRows;
+        public string Header = "";
+        public string Footer = "DinkCel · Trang &P / &N";
+        public bool Gridlines = true;
+        public bool PrintCharts = true;
+        public readonly List<int> PageBreakRows = new List<int>();
+
+        public PrintSettings Copy()
+        {
+            var copy = new PrintSettings { PrintArea = PrintArea, Landscape = Landscape,
+                Paper = Paper, MarginLeft = MarginLeft, MarginRight = MarginRight,
+                MarginTop = MarginTop, MarginBottom = MarginBottom, Scale = Scale,
+                FitToOnePage = FitToOnePage, TitleRows = TitleRows, Header = Header,
+                Footer = Footer, Gridlines = Gridlines, PrintCharts = PrintCharts };
+            copy.PageBreakRows.AddRange(PageBreakRows);
+            return copy;
+        }
     }
 
     internal sealed class ValidationRule
@@ -139,10 +186,41 @@ namespace DinkCel
             foreach (ChartDefinition chart in sheet.Charts)
             {
                 var element = new XElement("chart", new XAttribute("title", chart.Title),
-                    new XAttribute("kind", chart.Kind));
+                    new XAttribute("kind", chart.Kind), new XAttribute("axisX", chart.AxisTitleX),
+                    new XAttribute("axisY", chart.AxisTitleY), new XAttribute("legend", chart.Legend),
+                    new XAttribute("labels", chart.DataLabels), new XAttribute("gridlines", chart.Gridlines));
                 SetRange(element, chart.Range);
+                if (!chart.Placement.IsEmpty)
+                    element.Add(new XElement("placement", new XAttribute("column", chart.Placement.X),
+                        new XAttribute("row", chart.Placement.Y), new XAttribute("width", chart.Placement.Width),
+                        new XAttribute("height", chart.Placement.Height)));
+                foreach (int column in chart.SeriesColumns)
+                {
+                    string name;
+                    Color color;
+                    var series = new XElement("series", new XAttribute("column", column));
+                    if (chart.SeriesNames.TryGetValue(column, out name)) series.SetAttributeValue("name", name);
+                    if (chart.SeriesColors.TryGetValue(column, out color))
+                        series.SetAttributeValue("color", ColorTranslator.ToHtml(color));
+                    element.Add(series);
+                }
                 root.Add(element);
             }
+            PrintSettings print = sheet.Print;
+            var printElement = new XElement("print", new XAttribute("landscape", print.Landscape),
+                new XAttribute("paper", print.Paper), new XAttribute("left", print.MarginLeft),
+                new XAttribute("right", print.MarginRight), new XAttribute("top", print.MarginTop),
+                new XAttribute("bottom", print.MarginBottom), new XAttribute("scale", print.Scale),
+                new XAttribute("fit", print.FitToOnePage), new XAttribute("titleRows", print.TitleRows),
+                new XAttribute("header", print.Header), new XAttribute("footer", print.Footer),
+                new XAttribute("gridlines", print.Gridlines), new XAttribute("charts", print.PrintCharts));
+            if (!print.PrintArea.IsEmpty)
+            {
+                var area = new XElement("area"); SetRange(area, print.PrintArea); printElement.Add(area);
+            }
+            foreach (int row in print.PageBreakRows)
+                printElement.Add(new XElement("break", new XAttribute("row", row)));
+            root.Add(printElement);
             foreach (ValidationRule rule in sheet.Validations)
             {
                 var element = new XElement("validation", new XAttribute("kind", rule.Kind),
@@ -180,8 +258,51 @@ namespace DinkCel
                 sheet.Tables.Add(table);
             }
             foreach (XElement element in root.Elements("chart"))
-                sheet.Charts.Add(new ChartDefinition { Title = (string)element.Attribute("title") ?? "Chart",
-                    Kind = (string)element.Attribute("kind") ?? "Column", Range = GetRange(element) });
+            {
+                var chart = new ChartDefinition { Title = (string)element.Attribute("title") ?? "Chart",
+                    Kind = (string)element.Attribute("kind") ?? "Column", Range = GetRange(element),
+                    AxisTitleX = (string)element.Attribute("axisX") ?? "",
+                    AxisTitleY = (string)element.Attribute("axisY") ?? "",
+                    Legend = (bool?)element.Attribute("legend") ?? true,
+                    DataLabels = (bool?)element.Attribute("labels") ?? false,
+                    Gridlines = (bool?)element.Attribute("gridlines") ?? true };
+                XElement placement = element.Element("placement");
+                if (placement != null) chart.Placement = GetRange(placement);
+                foreach (XElement series in element.Elements("series"))
+                {
+                    int column = (int)series.Attribute("column");
+                    chart.SeriesColumns.Add(column);
+                    string name = (string)series.Attribute("name");
+                    if (name != null) chart.SeriesNames[column] = name;
+                    string color = (string)series.Attribute("color");
+                    if (!string.IsNullOrEmpty(color))
+                        try { chart.SeriesColors[column] = ColorTranslator.FromHtml(color); }
+                        catch (ArgumentException) { }
+                }
+                sheet.Charts.Add(chart);
+            }
+            XElement printElement = root.Element("print");
+            if (printElement != null)
+            {
+                var print = new PrintSettings { Landscape = (bool?)printElement.Attribute("landscape") ?? true,
+                    Paper = (string)printElement.Attribute("paper") ?? "A4",
+                    MarginLeft = (int?)printElement.Attribute("left") ?? 50,
+                    MarginRight = (int?)printElement.Attribute("right") ?? 50,
+                    MarginTop = (int?)printElement.Attribute("top") ?? 60,
+                    MarginBottom = (int?)printElement.Attribute("bottom") ?? 60,
+                    Scale = (int?)printElement.Attribute("scale") ?? 100,
+                    FitToOnePage = (bool?)printElement.Attribute("fit") ?? false,
+                    TitleRows = (int?)printElement.Attribute("titleRows") ?? 0,
+                    Header = (string)printElement.Attribute("header") ?? "",
+                    Footer = (string)printElement.Attribute("footer") ?? "",
+                    Gridlines = (bool?)printElement.Attribute("gridlines") ?? true,
+                    PrintCharts = (bool?)printElement.Attribute("charts") ?? true };
+                XElement area = printElement.Element("area");
+                if (area != null) print.PrintArea = GetRange(area);
+                foreach (XElement entry in printElement.Elements("break"))
+                    print.PageBreakRows.Add((int)entry.Attribute("row"));
+                sheet.Print = print;
+            }
             foreach (XElement element in root.Elements("validation"))
             {
                 var rule = new ValidationRule { Range = GetRange(element),

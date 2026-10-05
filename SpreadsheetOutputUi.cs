@@ -29,67 +29,112 @@ namespace DinkCel
             }
         }
 
-        private PrintDocument CreatePrintDocument()
+        private PrintDocument CreatePrintDocument() { return CreatePrintDocument(Rectangle.Empty); }
+
+        private PrintDocument CreatePrintDocument(Rectangle selection)
         {
-            grid.EndEdit();
-            int lastRow = 0, lastColumn = 0;
-            for (int r = 0; r < RowCount; r++)
-                for (int c = 0; c < ColumnCount; c++)
-                    if (!string.IsNullOrEmpty(Convert.ToString(grid[c, r].Value)))
-                    { lastRow = Math.Max(lastRow, r); lastColumn = Math.Max(lastColumn, c); }
-            const int rowsPerPage = 28, columnsPerPage = 8;
-            int rowPages = lastRow / rowsPerPage + 1;
-            int columnPages = lastColumn / columnsPerPage + 1;
+            grid.EndEdit(); SaveActiveSheet();
+            SheetSnapshot sheet = SnapshotFromState(sheets[activeSheetIndex]);
+            var pages = PrintLayout.Plan(sheet, RowCount, ColumnCount, selection, selection.IsEmpty);
             int pageIndex = 0;
-            var document = new PrintDocument();
-            document.DocumentName = sheets[activeSheetIndex].Name + " - DinkCel";
-            document.DefaultPageSettings.Landscape = true;
+            var document = new PrintDocument { DocumentName = sheet.Name + " - DinkCel" };
+            Size paper = PrintLayout.PaperSize(sheet.Print);
+            document.DefaultPageSettings.PaperSize = new PaperSize(sheet.Print.Paper,
+                sheet.Print.Landscape ? paper.Height : paper.Width,
+                sheet.Print.Landscape ? paper.Width : paper.Height);
+            document.DefaultPageSettings.Landscape = sheet.Print.Landscape;
+            document.DefaultPageSettings.Margins = new Margins(sheet.Print.MarginLeft,
+                sheet.Print.MarginRight, sheet.Print.MarginTop, sheet.Print.MarginBottom);
+            document.BeginPrint += delegate { pageIndex = 0; };
             document.PrintPage += delegate(object sender, PrintPageEventArgs e)
             {
-                int columnPage = pageIndex / rowPages;
-                int rowPage = pageIndex % rowPages;
-                Rectangle bounds = e.MarginBounds;
-                float top = bounds.Top + 34;
-                float cellHeight = Math.Min(22F, (bounds.Height - 60F) / (rowsPerPage + 1));
-                float width = (bounds.Width - 38F) / columnsPerPage;
-                using (var titleFont = new Font("Arial", 13F, FontStyle.Bold))
-                using (var headerFont = new Font("Arial", 8F, FontStyle.Bold))
-                using (var cellFont = new Font("Arial", 8F))
-                using (var border = new Pen(Color.LightGray))
-                {
-                    e.Graphics.DrawString(sheets[activeSheetIndex].Name, titleFont, Brushes.Black,
-                        bounds.Left, bounds.Top);
-                    for (int c = 0; c < columnsPerPage; c++)
-                    {
-                        int column = columnPage * columnsPerPage + c;
-                        if (column >= ColumnCount) break;
-                        var rectangle = new RectangleF(bounds.Left + 38 + c * width, top, width, cellHeight);
-                        e.Graphics.DrawRectangle(border, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height);
-                        e.Graphics.DrawString(grid.Columns[column].HeaderText, headerFont, Brushes.Black, rectangle);
-                    }
-                    for (int r = 0; r < rowsPerPage; r++)
-                    {
-                        int row = rowPage * rowsPerPage + r;
-                        if (row > lastRow) break;
-                        float y = top + (r + 1) * cellHeight;
-                        e.Graphics.DrawString((row + 1).ToString(), headerFont, Brushes.Black,
-                            bounds.Left, y);
-                        for (int c = 0; c < columnsPerPage; c++)
-                        {
-                            int column = columnPage * columnsPerPage + c;
-                            if (column >= ColumnCount) break;
-                            var rectangle = new RectangleF(bounds.Left + 38 + c * width, y, width, cellHeight);
-                            e.Graphics.DrawRectangle(border, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height);
-                            string text = Convert.ToString(grid[column, row].FormattedValue) ?? "";
-                            if (text.Length > 50) text = text.Substring(0, 49) + "…";
-                            e.Graphics.DrawString(text.Replace('\n', ' '), cellFont, Brushes.Black, rectangle);
-                        }
-                    }
-                }
-                pageIndex++;
-                e.HasMorePages = pageIndex < rowPages * columnPages;
+                if (pageIndex >= pages.Count) { e.HasMorePages = false; return; }
+                DrawPrintPage(e.Graphics, e.PageBounds, pages[pageIndex++], sheet);
+                e.HasMorePages = pageIndex < pages.Count;
             };
             return document;
+        }
+
+        private void DrawPrintPage(Graphics graphics, Rectangle pageBounds,
+            PrintPagePlan page, SheetSnapshot sheet)
+        {
+            PrintSettings options = sheet.Print;
+            float left = options.MarginLeft, top = options.MarginTop;
+            using (var font = new Font("Arial", 9F))
+            using (var pen = new Pen(Color.LightGray))
+            {
+                graphics.DrawString(PrintLayout.HeaderFooter(options.Header, page), font,
+                    Brushes.Black, left, Math.Max(4, top - 30));
+                graphics.DrawString(PrintLayout.HeaderFooter(options.Footer, page), font,
+                    Brushes.Black, left, pageBounds.Height - options.MarginBottom + 12);
+                if (page.Chart != null)
+                {
+                    using (var chart = ChartRendering.Build(page.Chart, (r, c) =>
+                        DisplayPrintCell(sheet, r, c), Color.White, Color.Black, Color.SteelBlue))
+                    {
+                        chart.Size = new Size(1000, 650);
+                        using (var stream = new MemoryStream())
+                        {
+                            chart.SaveImage(stream, System.Windows.Forms.DataVisualization.Charting.ChartImageFormat.Png);
+                            stream.Position = 0;
+                            using (Image image = Image.FromStream(stream))
+                                graphics.DrawImage(image, left, top, pageBounds.Width - options.MarginLeft -
+                                    options.MarginRight, pageBounds.Height - options.MarginTop - options.MarginBottom - 45);
+                        }
+                    }
+                    return;
+                }
+                float y = top;
+                Action<int> drawRow = row =>
+                {
+                    float x = left;
+                    float height = (float)(SheetRowHeight(sheet, row) * page.Scale);
+                    for (int column = page.FirstColumn; column < page.LastColumn; column++)
+                    {
+                        float width = (float)(SheetColumnWidth(sheet, column) * page.Scale);
+                        var box = new RectangleF(x, y, width, height);
+                        CellSnapshot cell;
+                        sheet.Cells.TryGetValue(row * ColumnCount + column, out cell);
+                        if (cell != null && !cell.BackColor.IsEmpty)
+                            using (var fill = new SolidBrush(cell.BackColor)) graphics.FillRectangle(fill, box);
+                        if (options.Gridlines) graphics.DrawRectangle(pen, box.X, box.Y, box.Width, box.Height);
+                        string value = DisplayPrintCell(sheet, row, column).Replace('\r', ' ').Replace('\n', ' ');
+                        if (value.Length > 80) value = value.Substring(0, 79) + "…";
+                        using (var brush = new SolidBrush(cell == null || cell.ForeColor.IsEmpty ?
+                            Color.Black : cell.ForeColor))
+                        using (var cellFont = cell != null && cell.HasFont ? new Font(cell.FontName,
+                            Math.Max(6, cell.FontSize * (float)page.Scale), cell.FontStyle) :
+                            new Font("Arial", Math.Max(6, 9F * (float)page.Scale)))
+                            graphics.DrawString(value, cellFont, brush, box);
+                        x += width;
+                    }
+                    y += height;
+                };
+                if (page.TitleRows > 0)
+                    for (int row = 0; row < page.TitleRows; row++) drawRow(row);
+                for (int row = page.FirstRow; row < page.LastRow; row++) drawRow(row);
+            }
+        }
+
+        private static double SheetColumnWidth(SheetSnapshot sheet, int column)
+        { int width; return (sheet.ColumnWidths.TryGetValue(column, out width) ? width : 120) * 100.0 / 96; }
+
+        private static double SheetRowHeight(SheetSnapshot sheet, int row)
+        { int height; return (sheet.RowHeights.TryGetValue(row, out height) ? height : 27) * 100.0 / 96; }
+
+        private static string SheetCellText(SheetSnapshot sheet, int row, int column)
+        {
+            CellSnapshot cell;
+            return sheet.Cells.TryGetValue(row * ColumnCount + column, out cell) ? cell.Text ?? "" : "";
+        }
+
+        private string DisplayPrintCell(SheetSnapshot sheet, int row, int column)
+        {
+            string raw = SheetCellText(sheet, row, column);
+            if (!raw.StartsWith("=", StringComparison.Ordinal)) return raw;
+            string value;
+            if (calculated.TryGetValue(row * ColumnCount + column, out value)) return value;
+            return formulaEngine == null ? raw : formulaEngine.Display(row, column);
         }
 
         private void PreviewPrint()
@@ -107,7 +152,11 @@ namespace DinkCel
                 if (dialog.ShowDialog(this) == DialogResult.OK) document.Print();
         }
 
-        private void ExportPdf()
+        private void ExportPdf() { ExportPdf(Rectangle.Empty); }
+
+        private void ExportPdfSelection() { ExportPdf(SelectionRange(false)); }
+
+        private void ExportPdf(Rectangle selection)
         {
             using (var dialog = new SaveFileDialog { Filter = "PDF (*.pdf)|*.pdf",
                 DefaultExt = "pdf", FileName = currentPath == null ? "BangTinh.pdf" :
@@ -120,7 +169,8 @@ namespace DinkCel
                     var book = new WorkbookSnapshot(); book.Sheets.Clear();
                     book.NamedRanges.AddRange(namedRanges);
                     foreach (SheetState sheet in sheets) book.Sheets.Add(SnapshotFromState(sheet));
-                    PdfFile.Write(dialog.FileName, book, RowCount, ColumnCount);
+                    PdfFile.Write(dialog.FileName, book, RowCount, ColumnCount, selection,
+                        selection.IsEmpty ? null : sheets[activeSheetIndex].Name);
                     status.Text = "Đã xuất PDF " + Path.GetFileName(dialog.FileName);
                 }
                 catch (Exception error)

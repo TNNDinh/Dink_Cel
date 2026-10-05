@@ -12,7 +12,14 @@ Nhấp đúp DinkCel.exe. Máy cần .NET Framework của Windows.
 
 Nếu sửa mã nguồn, chạy build.cmd để tạo lại DinkCel.exe. Máy build cần trình biên dịch C# của .NET Framework.
 
-## Tính năng v0.8.0 — Table & Pivot
+## Tính năng v0.9.0 — Chart & Printing
+
+- **Biểu đồ:** Column, Line, Pie, Bar, Area, Scatter, Stacked, 100% Stacked và Combo. Biểu đồ hiển thị nổi trên sheet; kéo tiêu đề để di chuyển, kéo góc để đổi kích thước, nhấp đúp để xem và sửa. Có thể sao chép và xuất PNG.
+- **Trình sửa biểu đồ:** đổi tiêu đề, loại, vùng dữ liệu, tên trục, chú giải, nhãn dữ liệu, đường lưới, series, tên và màu của từng series, vị trí cùng kích thước.
+- **In:** menu **Tệp > Thiết lập trang in** chọn hướng, khổ A4/Letter/Legal/A3, lề, tỷ lệ, vừa một trang, hàng tiêu đề lặp, vùng in, đầu/chân trang, đường lưới và trang biểu đồ. Có lệnh đặt vùng in, ngắt trang, xem trước, in vùng chọn và xuất PDF vùng chọn. Đầu/chân trang nhận `&F` (tên sheet), `&P` (số trang), `&N` (tổng trang), `&D` (ngày).
+- `.dinkcel` giữ đầy đủ thiết lập biểu đồ và in. `.xlsx` trao đổi các kiểu biểu đồ mới, vị trí biểu đồ, vùng in và thiết lập trang thông dụng; PDF xuất bảng và biểu đồ thành các trang riêng.
+
+### Tính năng từ v0.8.0 — Table & Pivot
 
 - **Table:** chọn vùng dữ liệu rồi dùng menu **Dữ liệu > Tạo Table**. Có tên riêng, kiểu màu, hàng tiêu đề, hàng tổng, sọc hàng/cột, bộ lọc tại tiêu đề, tự mở rộng khi nhập thêm và cột công thức. Công thức hỗ trợ `=SUM(Table1[Doanh thu])` và `=[@Doanh thu]`; đổi tên Table cập nhật các công thức liên quan.
 - **Pivot:** cấu hình tối đa ba trường Rows, hai Columns, ba Values và hai Filters. Hỗ trợ Sum, Count, Average, Min, Max, tổng cuối, tổng nhóm, sắp xếp, lọc, thu gọn/mở rộng nhóm, làm mới và nhóm ngày theo ngày/tháng/năm. Pivot lấy nguồn từ Table sẽ theo vùng dữ liệu mới sau khi Table mở rộng.
@@ -129,7 +136,9 @@ File `.dinkcel` là định dạng riêng của DinkCel; `.xlsx`, `.xls` và `.o
 - DinkCel.ico: icon được nhúng vào file .exe và dùng trên thanh tiêu đề. icon_dink_cell.png là ảnh gốc; chạy `powershell.exe -NoProfile -ExecutionPolicy Bypass -File make_icon.ps1` trong thư mục project để tạo lại .ico khi thay ảnh.
 - DesktopApp.cs: mã nguồn Windows Forms.
 - SpreadsheetFeatures.cs: các thao tác sheet, dữ liệu và định dạng trong giao diện.
-- XlsxFile.cs, XlsxStyles.cs và XlsxCharts.cs: đọc/ghi `.xlsx` và biểu đồ.
+- XlsxFile.cs, XlsxStyles.cs, XlsxCharts.cs và XlsxChartsV9.cs: đọc/ghi `.xlsx`, biểu đồ và thiết lập trang.
+- ChartRendering.cs, ChartEditorUi.cs và ChartOverlayUi.cs: vẽ, chỉnh sửa và thao tác biểu đồ trên sheet.
+- PrintLayout.cs, PrintSetupUi.cs, SpreadsheetOutputUi.cs và PdfFile.cs: bố cục trang, xem trước, in và PDF.
 - XlsFile.cs, OdsFile.cs, PdfFile.cs: đọc/ghi `.xls`, `.ods` và xuất PDF.
 - WorkbookFeatures.cs, SpreadsheetV3Ui.cs và SpreadsheetOutputUi.cs: metadata và giao diện v0.3.
 - SpreadsheetEditingUi.cs: điều hướng, Name Box, Formula Bar, vùng chọn, Fill và clipboard.

@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -9,30 +10,23 @@ namespace DinkCel
 {
     internal static class PdfFile
     {
-        private static string ColumnName(int column)
-        {
-            string text = "";
-            do { text = (char)('A' + column % 26) + text; column = column / 26 - 1; } while (column >= 0);
-            return text;
-        }
+        private static readonly XPdfFontOptions FontOptions = new XPdfFontOptions(PdfFontEncoding.Unicode);
 
         public static void Write(string path, WorkbookSnapshot workbook, int rowCount, int columnCount)
+        { Write(path, workbook, rowCount, columnCount, Rectangle.Empty, null); }
+
+        public static void Write(string path, WorkbookSnapshot workbook, int rowCount, int columnCount,
+            Rectangle selection, string selectedSheet)
         {
             EmbeddedDependencies.Install();
             var document = new PdfDocument();
             document.Info.Title = "DinkCel workbook";
-            var options = new XPdfFontOptions(PdfFontEncoding.Unicode);
-            var titleFont = new XFont("Arial", 14, XFontStyle.Bold, options);
-            var headerFont = new XFont("Arial", 8, XFontStyle.Bold, options);
-            var cellFont = new XFont("Arial", 8, XFontStyle.Regular, options);
-            const int rowsPerPage = 26, columnsPerPage = 8;
             foreach (SheetSnapshot sheet in workbook.Sheets)
             {
-                int lastRow = sheet.Cells.Count == 0 ? 0 : sheet.Cells.Keys.Max() / columnCount;
-                int lastColumn = sheet.Cells.Count == 0 ? 0 : sheet.Cells.Keys.Max() % columnCount;
-                foreach (int key in sheet.Cells.Keys) lastColumn = Math.Max(lastColumn, key % columnCount);
-                int rowPages = Math.Max(1, lastRow / rowsPerPage + 1);
-                int columnPages = Math.Max(1, lastColumn / columnsPerPage + 1);
+                if (selectedSheet != null && !string.Equals(sheet.Name, selectedSheet,
+                    StringComparison.OrdinalIgnoreCase)) continue;
+                var pages = PrintLayout.Plan(sheet, rowCount, columnCount,
+                    selectedSheet == null ? Rectangle.Empty : selection, selectedSheet == null);
                 var engine = new FormulaEngine((r, c) => Raw(sheet, r, c, columnCount),
                     (name, r, c) =>
                     {
@@ -46,52 +40,49 @@ namespace DinkCel
                         return named == null ? null : new FormulaNamedRange
                         { Sheet = named.Sheet, FirstRow = named.Range.Top, FirstColumn = named.Range.Left,
                             LastRow = named.Range.Bottom - 1, LastColumn = named.Range.Right - 1 };
-                    });
-                for (int cp = 0; cp < columnPages; cp++)
-                    for (int rp = 0; rp < rowPages; rp++)
+                    }, null, (currentSheet, tableName, header, currentRow) =>
                     {
-                        PdfPage page = document.AddPage();
-                        page.Size = PdfSharp.PageSize.A4;
-                        page.Orientation = PdfSharp.PageOrientation.Landscape;
-                        using (XGraphics graphics = XGraphics.FromPdfPage(page))
+                        foreach (SheetSnapshot source in workbook.Sheets)
                         {
-                            double left = 32, top = 34, cellHeight = 18;
-                            double width = (page.Width.Point - 64 - 38) / columnsPerPage;
-                            graphics.DrawString(sheet.Name, titleFont, XBrushes.Black,
-                                new XRect(left, 12, page.Width.Point - 64, 24), XStringFormats.CenterLeft);
-                            graphics.DrawString("DinkCel • " + (rp + 1) + "/" + rowPages + " • " + (cp + 1) + "/" + columnPages,
-                                cellFont, XBrushes.Gray, new XRect(left, page.Height.Point - 22,
-                                    page.Width.Point - 64, 12), XStringFormats.CenterRight);
-                            DrawCell(graphics, "#", left, top, 38, cellHeight, headerFont, true);
-                            for (int c = 0; c < columnsPerPage; c++)
-                                if (cp * columnsPerPage + c < columnCount)
-                                    DrawCell(graphics, ColumnName(cp * columnsPerPage + c), left + 38 + c * width,
-                                        top, width, cellHeight, headerFont, true);
-                            for (int r = 0; r < rowsPerPage; r++)
+                            if (tableName == null && !string.Equals(source.Name, currentSheet,
+                                StringComparison.OrdinalIgnoreCase)) continue;
+                            foreach (TableDefinition table in source.Tables)
                             {
-                                int row = rp * rowsPerPage + r;
-                                if (row > lastRow) break;
-                                double y = top + (r + 1) * cellHeight;
-                                DrawCell(graphics, (row + 1).ToString(), left, y, 38, cellHeight, headerFont, true);
-                                for (int c = 0; c < columnsPerPage; c++)
+                                if (tableName != null && !string.Equals(table.Name, tableName,
+                                    StringComparison.OrdinalIgnoreCase)) continue;
+                                int first = table.Range.Top + (table.HeaderRow ? 1 : 0);
+                                int last = table.Range.Bottom - (table.TotalRow ? 1 : 0) - 1;
+                                if (currentRow >= 0 && (currentRow < first || currentRow > last)) continue;
+                                for (int column = table.Range.Left; column < table.Range.Right; column++)
                                 {
-                                    int column = cp * columnsPerPage + c;
-                                    if (column >= columnCount) break;
-                                    CellSnapshot cell;
-                                    string raw = sheet.Cells.TryGetValue(row * columnCount + column, out cell) ? cell.Text ?? "" : "";
-                                    string value = raw.StartsWith("=", StringComparison.Ordinal) ? engine.Display(row, column) : raw;
-                                    if (cell != null && !string.IsNullOrEmpty(cell.NumberFormat))
-                                    {
-                                        double number;
-                                        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out number))
-                                            try { value = number.ToString(cell.NumberFormat, CultureInfo.CurrentCulture); }
-                                            catch (FormatException) { }
-                                    }
-                                    DrawCell(graphics, value, left + 38 + c * width, y, width, cellHeight, cellFont, false);
+                                    string name = table.HeaderRow ? Raw(source, table.Range.Top,
+                                        column, columnCount) : "Column" + (column - table.Range.Left + 1);
+                                    if (!string.Equals(name, header, StringComparison.OrdinalIgnoreCase)) continue;
+                                    return new FormulaNamedRange { Sheet = source.Name,
+                                        FirstRow = currentRow >= 0 ? currentRow : first,
+                                        LastRow = currentRow >= 0 ? currentRow : last,
+                                        FirstColumn = column, LastColumn = column };
                                 }
                             }
                         }
-                    }
+                        return null;
+                    });
+                Func<int, int, string> display = (r, c) =>
+                {
+                    string raw = Raw(sheet, r, c, columnCount);
+                    return raw.StartsWith("=", StringComparison.Ordinal) ? engine.Display(r, c) : raw;
+                };
+                foreach (PrintPagePlan plan in pages)
+                {
+                    var page = document.AddPage();
+                    page.Size = sheet.Print.Paper == "A3" ? PdfSharp.PageSize.A3 :
+                        sheet.Print.Paper == "Letter" ? PdfSharp.PageSize.Letter :
+                        sheet.Print.Paper == "Legal" ? PdfSharp.PageSize.Legal : PdfSharp.PageSize.A4;
+                    page.Orientation = sheet.Print.Landscape ? PdfSharp.PageOrientation.Landscape :
+                        PdfSharp.PageOrientation.Portrait;
+                    using (XGraphics graphics = XGraphics.FromPdfPage(page))
+                        DrawPage(graphics, page, plan, display, columnCount);
+                }
             }
             string temporary = path + ".tmp";
             try
@@ -109,16 +100,88 @@ namespace DinkCel
             return sheet.Cells.TryGetValue(row * columns + column, out cell) ? cell.Text ?? "" : "";
         }
 
-        private static void DrawCell(XGraphics graphics, string value, double x, double y,
-            double width, double height, XFont font, bool header)
+        private static double ColumnWidth(SheetSnapshot sheet, int column)
+        { int value; return (sheet.ColumnWidths.TryGetValue(column, out value) ? value : 120) * .75; }
+
+        private static double RowHeight(SheetSnapshot sheet, int row)
+        { int value; return (sheet.RowHeights.TryGetValue(row, out value) ? value : 27) * .75; }
+
+        private static XBrush Brush(Color color)
+        { return new XSolidBrush(XColor.FromArgb(color.R, color.G, color.B)); }
+
+        private static void DrawPage(XGraphics graphics, PdfPage pdfPage, PrintPagePlan plan,
+            Func<int, int, string> display, int columns)
         {
-            var bounds = new XRect(x, y, width, height);
-            if (header) graphics.DrawRectangle(XBrushes.LightGray, bounds);
-            graphics.DrawRectangle(XPens.LightGray, bounds);
-            value = (value ?? "").Replace('\r', ' ').Replace('\n', ' ');
-            if (value.Length > 50) value = value.Substring(0, 49) + "…";
-            graphics.DrawString(value, font, XBrushes.Black,
-                new XRect(x + 3, y + 1, width - 6, height - 2), XStringFormats.CenterLeft);
+            SheetSnapshot sheet = plan.Sheet;
+            PrintSettings settings = sheet.Print;
+            double left = settings.MarginLeft * .72;
+            double top = settings.MarginTop * .72;
+            double pageWidth = pdfPage.Width.Point, pageHeight = pdfPage.Height.Point;
+            var small = new XFont("Arial", 9, XFontStyle.Regular, FontOptions);
+            string header = PrintLayout.HeaderFooter(settings.Header, plan);
+            string footer = PrintLayout.HeaderFooter(settings.Footer, plan);
+            if (header.Length > 0) graphics.DrawString(header, small, XBrushes.Black,
+                new XRect(left, Math.Max(2, top - 24), pageWidth - left, 18), XStringFormats.CenterLeft);
+            if (footer.Length > 0) graphics.DrawString(footer, small, XBrushes.Black,
+                new XRect(left, pageHeight - settings.MarginBottom * .72 + 5,
+                    pageWidth - left - settings.MarginRight * .72, 18), XStringFormats.CenterRight);
+            if (plan.Chart != null)
+            {
+                using (var chart = ChartRendering.Build(plan.Chart, display,
+                    Color.White, Color.Black, Color.SteelBlue))
+                {
+                    chart.Size = new Size(1100, 700);
+                    using (var stream = new MemoryStream())
+                    {
+                        chart.SaveImage(stream,
+                            System.Windows.Forms.DataVisualization.Charting.ChartImageFormat.Png);
+                        stream.Position = 0;
+                        using (XImage image = XImage.FromStream(stream))
+                            graphics.DrawImage(image, left, top,
+                                pageWidth - left - settings.MarginRight * .72,
+                                pageHeight - top - settings.MarginBottom * .72 - 30);
+                    }
+                }
+                return;
+            }
+            double y = top;
+            Action<int> drawRow = row =>
+            {
+                double x = left;
+                double height = RowHeight(sheet, row) * plan.Scale;
+                for (int column = plan.FirstColumn; column < plan.LastColumn; column++)
+                {
+                    double width = ColumnWidth(sheet, column) * plan.Scale;
+                    var rect = new XRect(x, y, width, height);
+                    CellSnapshot cell;
+                    sheet.Cells.TryGetValue(row * columns + column, out cell);
+                    if (cell != null && !cell.BackColor.IsEmpty)
+                        graphics.DrawRectangle(Brush(cell.BackColor), rect);
+                    if (settings.Gridlines) graphics.DrawRectangle(XPens.LightGray, rect);
+                    string text = display(row, column).Replace('\r', ' ').Replace('\n', ' ');
+                    if (cell != null && !string.IsNullOrEmpty(cell.NumberFormat))
+                    {
+                        double number;
+                        if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out number))
+                            try { text = number.ToString(cell.NumberFormat, CultureInfo.CurrentCulture); }
+                            catch (FormatException) { }
+                    }
+                    if (text.Length > 60) text = text.Substring(0, 59) + "…";
+                    XFontStyle style = cell != null && cell.HasFont &&
+                        (cell.FontStyle & FontStyle.Bold) != 0 ? XFontStyle.Bold : XFontStyle.Regular;
+                    var font = new XFont("Arial", Math.Max(6, cell != null && cell.HasFont ?
+                        cell.FontSize * plan.Scale : 8 * plan.Scale), style, FontOptions);
+                    graphics.DrawString(text, font, cell == null || cell.ForeColor.IsEmpty ?
+                        XBrushes.Black : Brush(cell.ForeColor),
+                        new XRect(x + 2, y + 1, Math.Max(2, width - 4), Math.Max(2, height - 2)),
+                        XStringFormats.CenterLeft);
+                    x += width;
+                }
+                y += height;
+            };
+            if (plan.TitleRows > 0)
+                for (int row = 0; row < plan.TitleRows; row++) drawRow(row);
+            for (int row = plan.FirstRow; row < plan.LastRow; row++) drawRow(row);
         }
     }
 }
