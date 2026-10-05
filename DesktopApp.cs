@@ -84,6 +84,7 @@ namespace DinkCel
         public Color Background = Color.FromArgb(232, 240, 248);
         public bool HasBackground;
         public string ThemeId;
+        public bool StructureProtected;
         public WorkbookSnapshot() { Sheets.Add(new SheetSnapshot()); }
     }
 
@@ -91,6 +92,7 @@ namespace DinkCel
     {
         public string Name = "Sheet1";
         public bool Hidden;
+        public bool Protected;
         public Color TabColor = Color.Empty;
         public Color Background = Color.Empty;
         public string ThemeId;
@@ -104,10 +106,17 @@ namespace DinkCel
         public readonly List<FilterCriterion> Filters = new List<FilterCriterion>();
         public readonly List<TableDefinition> Tables = new List<TableDefinition>();
         public readonly List<ChartDefinition> Charts = new List<ChartDefinition>();
+        public readonly List<SheetObject> Objects = new List<SheetObject>();
         public PrintSettings Print = new PrintSettings();
         public readonly List<ValidationRule> Validations = new List<ValidationRule>();
         public int FreezeRow;
         public int FreezeColumn;
+        public double SplitX;
+        public double SplitY;
+        public bool ShowGridlines = true;
+        public bool ShowHeadings = true;
+        public bool FormulaView;
+        public string ViewMode = "normal";
         public int FilterColumn = -1;
         public string FilterValue = "";
     }
@@ -116,16 +125,24 @@ namespace DinkCel
     {
         public string Name = "Sheet1";
         public bool Hidden;
+        public bool Protected;
         public Color TabColor = Color.Empty;
         public readonly List<Rectangle> Merges = new List<Rectangle>();
         public readonly List<ConditionalRule> Rules = new List<ConditionalRule>();
         public readonly List<FilterCriterion> Filters = new List<FilterCriterion>();
         public readonly List<TableDefinition> Tables = new List<TableDefinition>();
         public readonly List<ChartDefinition> Charts = new List<ChartDefinition>();
+        public readonly List<SheetObject> Objects = new List<SheetObject>();
         public PrintSettings Print = new PrintSettings();
         public readonly List<ValidationRule> Validations = new List<ValidationRule>();
         public int FreezeRow;
         public int FreezeColumn;
+        public double SplitX;
+        public double SplitY;
+        public bool ShowGridlines = true;
+        public bool ShowHeadings = true;
+        public bool FormulaView;
+        public string ViewMode = "normal";
         public int FilterColumn = -1;
         public string FilterValue = "";
         public readonly Dictionary<int, CellState> Cells =
@@ -178,6 +195,7 @@ namespace DinkCel
         private readonly Label sheetTab = new Label();
         private readonly FlowLayoutPanel sheetTabs = new FlowLayoutPanel();
         private readonly List<SheetState> sheets = new List<SheetState>();
+        private bool structureProtected;
         private int activeSheetIndex;
         private readonly List<Rectangle> merges = new List<Rectangle>();
         private CellState[,] copiedCells;
@@ -187,12 +205,19 @@ namespace DinkCel
         private readonly List<FilterCriterion> activeFilters = new List<FilterCriterion>();
         private readonly List<TableDefinition> tables = new List<TableDefinition>();
         private readonly List<ChartDefinition> charts = new List<ChartDefinition>();
+        private readonly List<SheetObject> objects = new List<SheetObject>();
         private PrintSettings printSettings = new PrintSettings();
         private readonly List<ValidationRule> validations = new List<ValidationRule>();
         private readonly List<NamedRange> namedRanges = new List<NamedRange>();
         private readonly List<PivotDefinition> pivots = new List<PivotDefinition>();
         private int freezeRow;
         private int freezeColumn;
+        private double splitX;
+        private double splitY;
+        private bool showGridlines = true;
+        private bool showHeadings = true;
+        private bool formulaView;
+        private string viewMode = "normal";
         private int filterColumn = -1;
         private string filterValue = "";
         private readonly ToolStripLabel themeSwatch = new ToolStripLabel("●");
@@ -221,6 +246,8 @@ namespace DinkCel
         private long savedRevision;
 
         private string currentPath;
+        private string importedXlsxPath;
+        private readonly List<string> importedXlsxLosses = new List<string>();
         private CsvDocument csvDocument;
         private ThemePalette theme;
         private Color sheetBackground;
@@ -377,6 +404,11 @@ namespace DinkCel
             menu.Items.Add(formatMenu);
             var viewMenu = new ToolStripMenuItem("Xem");
             AddMenuItem(viewMenu, "Đổi giao diện...", Keys.None, ChooseTheme);
+            AddMenuItem(viewMenu, "Ẩn/hiện đường lưới", Keys.None, delegate { showGridlines = !showGridlines; ApplySheetView(); MarkDirty(); });
+            AddMenuItem(viewMenu, "Ẩn/hiện tiêu đề hàng cột", Keys.None, delegate { showHeadings = !showHeadings; ApplySheetView(); MarkDirty(); });
+            AddMenuItem(viewMenu, "Hiện công thức", Keys.Control | Keys.Oemtilde, delegate { formulaView = !formulaView; ApplySheetView(); MarkDirty(); });
+            AddMenuItem(viewMenu, "Chế độ bình thường", Keys.None, delegate { viewMode = "normal"; ApplySheetView(); MarkDirty(); });
+            AddMenuItem(viewMenu, "Xem ngắt trang", Keys.None, delegate { viewMode = "pageBreakPreview"; ApplySheetView(); MarkDirty(); });
             AddMenuItem(viewMenu, "Tìm lệnh...", Keys.Control | Keys.K, ShowCommandPalette);
             AddMenuItem(viewMenu, "Đi nhanh...", Keys.Control | Keys.Shift | Keys.P, ShowQuickNavigator);
             AddMenuItem(viewMenu, "Bảng Inspector", Keys.Control | Keys.Shift | Keys.I, ToggleInspector);
@@ -528,6 +560,13 @@ namespace DinkCel
             grid.ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableWithoutHeaderText;
             grid.ShortcutHandler = HandleEditingShortcut;
             grid.CellPainting += GridCellPainting;
+            grid.RowPostPaint += delegate(object sender, DataGridViewRowPostPaintEventArgs e)
+            {
+                if (viewMode != "pageBreakPreview" || !printSettings.PageBreakRows.Contains(e.RowIndex)) return;
+                using (var pen = new Pen(Color.FromArgb(40, 115, 230), 2))
+                    e.Graphics.DrawLine(pen, grid.RowHeadersVisible ? grid.RowHeadersWidth : 0,
+                        e.RowBounds.Top, grid.ClientSize.Width, e.RowBounds.Top);
+            };
             grid.Paint += PaintMergedCells;
             grid.CellClick += delegate(object sender, DataGridViewCellEventArgs e)
             {
@@ -536,6 +575,17 @@ namespace DinkCel
                     if (merge.Contains(e.ColumnIndex, e.RowIndex) &&
                         (e.ColumnIndex != merge.X || e.RowIndex != merge.Y))
                     { grid.CurrentCell = grid[merge.X, merge.Y]; break; }
+            };
+            grid.CellMouseClick += delegate(object sender, DataGridViewCellMouseEventArgs e)
+            {
+                if (e.RowIndex < 0 || e.ColumnIndex < 0 || (Control.ModifierKeys & Keys.Control) == 0) return;
+                CellExtras extras = grid[e.ColumnIndex, e.RowIndex].Tag as CellExtras;
+                Uri target;
+                if (extras == null || !Uri.TryCreate(extras.Hyperlink, UriKind.Absolute, out target) ||
+                    target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps &&
+                    target.Scheme != Uri.UriSchemeMailto) return;
+                try { System.Diagnostics.Process.Start(target.AbsoluteUri); }
+                catch (Exception error) { MessageBox.Show(this, error.Message, "DinkCel"); }
             };
             grid.CellFormatting += GridCellFormatting;
             grid.CellPainting += PaintCellExtras;
@@ -788,6 +838,7 @@ namespace DinkCel
         {
             if (e.RowIndex < 0 || e.ColumnIndex < 0)
                 return;
+            if (formulaView) return;
             string result;
             if (calculated.TryGetValue(e.RowIndex * ColumnCount + e.ColumnIndex,
                 out result))
@@ -1128,16 +1179,24 @@ namespace DinkCel
             var state = new SheetState();
             state.Name = sheets.Count > activeSheetIndex ? sheets[activeSheetIndex].Name : "Sheet1";
             if (sheets.Count > activeSheetIndex)
-            { state.Hidden = sheets[activeSheetIndex].Hidden; state.TabColor = sheets[activeSheetIndex].TabColor; }
+            { state.Hidden = sheets[activeSheetIndex].Hidden; state.Protected = sheets[activeSheetIndex].Protected;
+                state.TabColor = sheets[activeSheetIndex].TabColor; }
             state.Merges.AddRange(merges);
             state.Rules.AddRange(conditionalRules);
             state.Filters.AddRange(activeFilters);
             state.Tables.AddRange(tables.Select(t => t.Copy()));
             state.Charts.AddRange(charts.Select(c => c.Copy()));
+            state.Objects.AddRange(objects.Select(o => o.Copy()));
             state.Print = printSettings.Copy();
             state.Validations.AddRange(validations);
             state.FreezeRow = freezeRow;
             state.FreezeColumn = freezeColumn;
+            state.SplitX = splitX;
+            state.SplitY = splitY;
+            state.ShowGridlines = showGridlines;
+            state.ShowHeadings = showHeadings;
+            state.FormulaView = formulaView;
+            state.ViewMode = viewMode;
             state.FilterColumn = filterColumn;
             state.FilterValue = filterValue;
             state.Background = sheetBackground;
@@ -1254,6 +1313,7 @@ namespace DinkCel
                         cell.Value = null;
                         cell.Style = new DataGridViewCellStyle();
                         cell.Tag = null;
+                        cell.ToolTipText = "";
                     }
                 }
                 gridOccupied.Clear(); formulaKeys.Clear(); changedCells.Clear(); changedRows.Clear(); scanAllCells = false;
@@ -1265,6 +1325,9 @@ namespace DinkCel
                     if (item.Value.Style != null)
                         cell.Style = new DataGridViewCellStyle(item.Value.Style);
                     cell.Tag = CellExtras.Copy(item.Value.Extras);
+                    CellExtras extras = cell.Tag as CellExtras;
+                    cell.ToolTipText = extras == null ? "" :
+                        extras.Note.Length > 0 ? extras.Note : extras.Hyperlink;
                     gridOccupied.Add(item.Key);
                     if ((Convert.ToString(item.Value.Value) ?? "").StartsWith("=", StringComparison.Ordinal)) formulaKeys.Add(item.Key);
                 }
@@ -1281,10 +1344,19 @@ namespace DinkCel
                 activeFilters.Clear(); activeFilters.AddRange(state.Filters);
                 tables.Clear(); tables.AddRange(state.Tables.Select(t => t.Copy()));
                 charts.Clear(); charts.AddRange(state.Charts.Select(c => c.Copy()));
+                objects.Clear(); objects.AddRange(state.Objects.Select(o => o.Copy()));
                 printSettings = state.Print.Copy();
                 validations.Clear(); validations.AddRange(state.Validations);
                 freezeRow = state.FreezeRow;
                 freezeColumn = state.FreezeColumn;
+                splitX = state.SplitX;
+                splitY = state.SplitY;
+                showGridlines = state.ShowGridlines;
+                showHeadings = state.ShowHeadings;
+                formulaView = state.FormulaView;
+                viewMode = state.ViewMode;
+                ApplySheetView();
+                grid.ReadOnly = state.Protected;
                 filterColumn = state.FilterColumn;
                 filterValue = state.FilterValue;
                 ApplyFreezeAndFilter();
@@ -1297,6 +1369,7 @@ namespace DinkCel
                 if (selected != null && selected != theme)
                     ApplyTheme(selected, false, true);
                 ApplySheetBackground(state.Background, false);
+                RefreshObjectOverlays();
             }
             finally
             {
@@ -1386,6 +1459,7 @@ namespace DinkCel
                     cell.Value = null;
                     cell.Style = new DataGridViewCellStyle();
                     cell.Tag = null;
+                    cell.ToolTipText = "";
                 }
             }
             gridOccupied.Clear(); formulaKeys.Clear(); changedCells.Clear(); changedRows.Clear(); scanAllCells = false;
@@ -1416,21 +1490,31 @@ namespace DinkCel
             loading = false;
             sheets.Clear();
             sheets.Add(new SheetState { Name = "Sheet1" });
+            structureProtected = false;
+            grid.ReadOnly = false;
             activeSheetIndex = 0;
             merges.Clear();
             UpdateMergedReadOnly();
             conditionalRules.Clear();
             activeFilters.Clear();
             tables.Clear(); charts.Clear(); validations.Clear();
+            objects.Clear(); RefreshObjectOverlays();
             printSettings = new PrintSettings();
             RefreshChartOverlays();
             namedRanges.Clear(); pivots.Clear();
             freezeRow = freezeColumn = 0;
+            splitX = splitY = 0;
+            showGridlines = showHeadings = true;
+            formulaView = false;
+            viewMode = "normal";
+            ApplySheetView();
             filterColumn = -1;
             filterValue = "";
             RefreshSheetTabs();
             ApplySheetBackground(theme.Sheet, false);
             currentPath = null;
+            importedXlsxPath = null;
+            importedXlsxLosses.Clear();
             csvDocument = null;
             dirty = false;
             otherSheetsDirty = false;
@@ -1466,6 +1550,7 @@ namespace DinkCel
                         extension == ".xlsx" ? XlsxFile.Read(path, MaxRowCount, ColumnCount) :
                         extension == ".xls" ? XlsFile.Read(path, MaxRowCount, ColumnCount) :
                         extension == ".ods" ? OdsFile.Read(path, MaxRowCount, ColumnCount) : ReadWorkbook(path);
+                    List<string> losses = extension == ".xlsx" ? XlsxFile.PotentialLosses(path) : null;
                     ClearGrid();
                     ThemePalette savedTheme = ThemePalette.Find(workbook.ThemeId);
                     if (savedTheme != null)
@@ -1473,6 +1558,7 @@ namespace DinkCel
                     if (workbook.HasBackground)
                         ApplySheetBackground(workbook.Background, false);
                     sheets.Clear();
+                    structureProtected = workbook.StructureProtected;
                     namedRanges.Clear(); namedRanges.AddRange(workbook.NamedRanges);
                     pivots.Clear(); pivots.AddRange(workbook.Pivots);
                     foreach (SheetSnapshot snapshot in workbook.Sheets)
@@ -1498,6 +1584,9 @@ namespace DinkCel
                     RestoreSheet(sheets[activeSheetIndex]);
                     RefreshSheetTabs();
                     currentPath = path;
+                    importedXlsxPath = losses == null ? null : Path.GetFullPath(path);
+                    importedXlsxLosses.Clear();
+                    if (losses != null) importedXlsxLosses.AddRange(losses);
                     dirty = false;
                     otherSheetsDirty = false;
                     Recalculate();
@@ -1507,6 +1596,9 @@ namespace DinkCel
                     ResetHistory();
                     RecordRecentFile(path);
                     HideWelcome();
+                    if (losses != null && losses.Count > 0)
+                        status.Text = "Excel compatibility: " + losses.Count +
+                            " feature(s) may change. Saving will show details.";
                 }
                 catch (Exception error)
                 {
@@ -1536,6 +1628,7 @@ namespace DinkCel
             if (document.Root == null || document.Root.Name != "workbook")
                 throw new InvalidDataException("Định dạng bảng tính không hợp lệ.");
             var workbook = new WorkbookSnapshot();
+            workbook.StructureProtected = (bool?)document.Root.Attribute("structureProtected") ?? false;
             XAttribute themeAttribute = document.Root.Attribute("theme");
             if (themeAttribute != null)
                 workbook.ThemeId = themeAttribute.Value;
@@ -1555,6 +1648,7 @@ namespace DinkCel
                     var sheet = new SheetSnapshot();
                     sheet.Name = (string)sheetElement.Attribute("name") ?? "Sheet" + (workbook.Sheets.Count + 1);
                     sheet.Hidden = (bool?)sheetElement.Attribute("hidden") ?? false;
+                    sheet.Protected = (bool?)sheetElement.Attribute("protected") ?? false;
                     string tabColor = (string)sheetElement.Attribute("tabColor");
                     if (!string.IsNullOrEmpty(tabColor)) sheet.TabColor = ColorTranslator.FromHtml(tabColor);
                     sheet.ThemeId = (string)sheetElement.Attribute("theme");
@@ -1563,6 +1657,12 @@ namespace DinkCel
                         sheet.Background = ColorTranslator.FromHtml(sheetBackground.Value);
                     sheet.FreezeRow = (int?)sheetElement.Attribute("freezeRow") ?? 0;
                     sheet.FreezeColumn = (int?)sheetElement.Attribute("freezeColumn") ?? 0;
+                    sheet.SplitX = (double?)sheetElement.Attribute("splitX") ?? 0;
+                    sheet.SplitY = (double?)sheetElement.Attribute("splitY") ?? 0;
+                    sheet.ShowGridlines = (bool?)sheetElement.Attribute("showGridlines") ?? true;
+                    sheet.ShowHeadings = (bool?)sheetElement.Attribute("showHeadings") ?? true;
+                    sheet.FormulaView = (bool?)sheetElement.Attribute("formulaView") ?? false;
+                    sheet.ViewMode = (string)sheetElement.Attribute("viewMode") ?? "normal";
                     sheet.FilterColumn = (int?)sheetElement.Attribute("filterColumn") ?? -1;
                     sheet.FilterValue = (string)sheetElement.Attribute("filterValue") ?? "";
                     foreach (XElement criterion in sheetElement.Elements("filterCriterion"))
@@ -1696,6 +1796,15 @@ namespace DinkCel
 
         private bool WriteDocument(string path)
         {
+            if (string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) &&
+                (objects.Count > 0 || sheets.Any(s => s.Objects.Count > 0)) &&
+                MessageBox.Show(this,
+                    "This workbook contains images or shapes. DinkCel currently stores these in .dinkcel, " +
+                    "but they will not be included in the XLSX file. Save anyway?",
+                    "DinkCel — objects omitted from XLSX", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return false;
+            if (!ConfirmXlsxCompatibilitySave(path)) return false;
             bool saved = IsCsvPath(path) ? WriteCsv(path) :
                 string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) ?
                 WriteXlsx(path) :
@@ -1705,6 +1814,54 @@ namespace DinkCel
                 WriteOds(path) : WriteWorkbook(path);
             if (saved) RecordRecentFile(path);
             return saved;
+        }
+
+        private bool ConfirmXlsxCompatibilitySave(string path)
+        {
+            bool targetIsXlsx = string.Equals(Path.GetExtension(path), ".xlsx",
+                StringComparison.OrdinalIgnoreCase);
+            bool targetExists = targetIsXlsx && File.Exists(path);
+            if (importedXlsxPath == null && !targetExists) return true;
+            var losses = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (importedXlsxPath != null)
+            {
+                foreach (string item in importedXlsxLosses) losses.Add(item);
+                losses.Add("Other Excel formatting or metadata that DinkCel cannot fully represent");
+            }
+            if (targetExists)
+            {
+                try
+                {
+                    foreach (string item in XlsxFile.PotentialLosses(path)) losses.Add(item);
+                }
+                catch (Exception error)
+                { losses.Add("Existing target could not be inspected: " + error.Message); }
+                losses.Add("The existing target workbook will be replaced");
+            }
+            string backupNotice = targetExists ?
+                "\n\nA .bak copy of the existing target file will be made before overwriting." :
+                "\n\nThe original imported Excel file will remain unchanged.";
+            if (MessageBox.Show(this,
+                "Saving this file may remove or change:\n\n- " +
+                string.Join("\n- ", losses.ToArray()) + backupNotice + "\n\nContinue saving?",
+                "DinkCel — possible data loss", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return false;
+            if (targetExists)
+            {
+                try
+                {
+                    string backup = path + ".before-dinkcel-" +
+                        DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".bak";
+                    File.Copy(path, backup, false);
+                }
+                catch (Exception error)
+                {
+                    MessageBox.Show(this, "Cannot create a backup. The file was not saved: " + error.Message,
+                        "DinkCel", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return false;
+                }
+            }
+            return true;
         }
 
         private bool WriteCsv(string path)
@@ -1780,7 +1937,8 @@ namespace DinkCel
                     new XAttribute("columns", ColumnCount),
                     new XAttribute("theme", theme.Id),
                     new XAttribute("background",
-                        ColorTranslator.ToHtml(sheetBackground)));
+                        ColorTranslator.ToHtml(sheetBackground)),
+                    new XAttribute("structureProtected", structureProtected));
                 foreach (SheetState state in sheets)
                     root.Add(SerializeSheet(SnapshotFromState(state)));
                 SerializeWorkbookMetadata(root, namedRanges, pivots);
@@ -2400,7 +2558,7 @@ namespace DinkCel
                 e.SuppressKeyPress = true;
                 return;
             }
-            if (e.KeyCode == Keys.Delete && !grid.IsCurrentCellInEditMode)
+            if (e.KeyCode == Keys.Delete && !grid.IsCurrentCellInEditMode && !grid.ReadOnly)
             {
                 ClearSelectedCells();
                 e.Handled = true;
@@ -2419,12 +2577,12 @@ namespace DinkCel
             if (HandleEditingShortcut(keyData)) return true;
             if (keyData == (Keys.Control | Keys.Z))
             {
-                Undo();
+                if (!grid.ReadOnly) Undo();
                 return true;
             }
             if (keyData == (Keys.Control | Keys.Y))
             {
-                Redo();
+                if (!grid.ReadOnly) Redo();
                 return true;
             }
             return base.ProcessCmdKey(ref message, keyData);

@@ -111,6 +111,88 @@ namespace DinkCel
                 Rectangle.Empty : new Rectangle(left, top, right - left + 1, bottom - top + 1);
         }
 
+        // The XLSX writer builds a new package. Keep this audit deliberately conservative:
+        // an unknown part or construct must be shown to the user before any save.
+        public static List<string> PotentialLosses(string path)
+        {
+            var losses = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var zip = ZipFile.OpenRead(path))
+            {
+                foreach (ZipArchiveEntry entry in zip.Entries)
+                {
+                    string name = entry.FullName.Replace('\\', '/');
+                    if (name.EndsWith("/", StringComparison.Ordinal)) continue;
+                    if (name.IndexOf("vbaProject", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("macrosheets/", StringComparison.OrdinalIgnoreCase) >= 0)
+                        losses.Add("VBA/macros");
+                    else if (name.IndexOf("externalLinks/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("connections", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("queryTables/", StringComparison.OrdinalIgnoreCase) >= 0)
+                        losses.Add("External connections and linked workbooks");
+                    else if (name.IndexOf("pivot", StringComparison.OrdinalIgnoreCase) >= 0)
+                        losses.Add("Excel Pivot Tables and pivot caches");
+                    else if (name.IndexOf("media/", StringComparison.OrdinalIgnoreCase) >= 0)
+                        losses.Add("Images, shapes or drawing placement");
+                    else if (name.StartsWith("xl/drawings/", StringComparison.OrdinalIgnoreCase) &&
+                        name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) &&
+                        !name.Contains("/_rels/"))
+                    {
+                        if (ReadXml(zip, name).Descendants().Any(e =>
+                            e.Name.LocalName == "pic" || e.Name.LocalName == "sp" ||
+                            e.Name.LocalName == "grpSp" || e.Name.LocalName == "cxnSp"))
+                            losses.Add("Images, shapes or drawing placement");
+                    }
+                    else if (name.IndexOf("threadedComments", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("persons/", StringComparison.OrdinalIgnoreCase) >= 0)
+                        losses.Add("Threaded comments");
+                    else if (name.IndexOf("comments", StringComparison.OrdinalIgnoreCase) >= 0)
+                        losses.Add("Comment formatting or authors");
+                    else if (name.IndexOf("charts/", StringComparison.OrdinalIgnoreCase) >= 0)
+                        losses.Add("Chart details or unsupported chart types");
+                    else if (!KnownPart(name)) losses.Add("Other package part: " + name);
+                }
+                XDocument workbook = ReadXml(zip, "xl/workbook.xml");
+                if (workbook.Descendants(S + "workbookProtection").Any()) losses.Add("Workbook protection");
+                if (workbook.Descendants(S + "externalReferences").Any()) losses.Add("External workbook references");
+                foreach (ZipArchiveEntry entry in zip.Entries.Where(e =>
+                    e.FullName.StartsWith("xl/worksheets/", StringComparison.OrdinalIgnoreCase) &&
+                    e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) &&
+                    !e.FullName.Contains("/_rels/")))
+                {
+                    XDocument sheet = ReadXml(zip, entry.FullName);
+                    if (sheet.Descendants(S + "sheetProtection").Any()) losses.Add("Sheet protection");
+                    if (sheet.Descendants(S + "pane").Any(p =>
+                        (string)p.Attribute("state") == "split")) losses.Add("Split panes and independent scrolling");
+                    if (sheet.Descendants(S + "legacyDrawing").Any()) losses.Add("Legacy drawings or notes");
+                    if (sheet.Descendants(S + "extLst").Any()) losses.Add("Excel extensions");
+                    if (sheet.Descendants(S + "f").Any(f => (string)f.Attribute("t") == "shared" ||
+                        (string)f.Attribute("t") == "array")) losses.Add("Shared or array formulas");
+                    if (sheet.Root.Elements().Any(e => !KnownSheetElement(e.Name.LocalName)))
+                        losses.Add("Other worksheet features: " + entry.FullName);
+                }
+            }
+            return losses.ToList();
+        }
+
+        private static bool KnownPart(string name)
+        {
+            return name == "[Content_Types].xml" || name == "_rels/.rels" ||
+                name == "docProps/app.xml" || name == "docProps/core.xml" ||
+                name == "xl/workbook.xml" || name == "xl/_rels/workbook.xml.rels" ||
+                name == "xl/styles.xml" || name == "xl/sharedStrings.xml" ||
+                name == "xl/theme/theme1.xml" ||
+                System.Text.RegularExpressions.Regex.IsMatch(name,
+                    @"^xl/worksheets/sheet\d+\.xml$|^xl/worksheets/_rels/sheet\d+\.xml\.rels$|^xl/tables/table\d+\.xml$|^xl/drawings/drawing\d+\.xml$|^xl/drawings/_rels/drawing\d+\.xml\.rels$");
+        }
+
+        private static bool KnownSheetElement(string name)
+        {
+            return new[] { "dimension", "sheetPr", "sheetViews", "sheetFormatPr", "cols",
+                "sheetData", "autoFilter", "mergeCells", "conditionalFormatting", "dataValidations",
+                "hyperlinks", "printOptions", "pageMargins", "pageSetup", "headerFooter",
+                "rowBreaks", "tableParts", "drawing" }.Contains(name);
+        }
+
         public static WorkbookSnapshot Read(string path, int rows, int columns)
         {
             using (var zip = ZipFile.OpenRead(path))
@@ -133,6 +215,8 @@ namespace DinkCel
                     differentialColors = XlsxStyles.ReadDifferentialColors(styleDocument);
                 }
                 var result = new WorkbookSnapshot(); result.Sheets.Clear();
+                result.StructureProtected = book.Descendants(S + "workbookProtection")
+                    .Any(e => (bool?)e.Attribute("lockStructure") == true);
                 foreach (var sheetInfo in book.Descendants(S + "sheet"))
                 {
                     string id = (string)sheetInfo.Attribute(R + "id");
@@ -141,6 +225,8 @@ namespace DinkCel
                     var document = ReadXml(zip, sheetPart);
                     var sheet = new SheetSnapshot { Name = (string)sheetInfo.Attribute("name") ?? "Sheet",
                         Hidden = string.Equals((string)sheetInfo.Attribute("state"), "hidden", StringComparison.OrdinalIgnoreCase) };
+                    sheet.Protected = document.Descendants(S + "sheetProtection")
+                        .Any(e => (bool?)e.Attribute("sheet") == true);
                     XElement setup = document.Root.Element(S + "pageSetup");
                     if (setup != null)
                     {
@@ -177,11 +263,27 @@ namespace DinkCel
                     if (!string.IsNullOrEmpty(tabRgb) && tabRgb.Length >= 6)
                         sheet.TabColor = ColorTranslator.FromHtml("#" + tabRgb.Substring(tabRgb.Length - 6));
                     var columnStyles = new Dictionary<int, int>();
+                    XElement sheetView = document.Descendants(S + "sheetView").FirstOrDefault();
+                    if (sheetView != null)
+                    {
+                        sheet.ShowGridlines = (bool?)sheetView.Attribute("showGridLines") ?? true;
+                        sheet.ShowHeadings = (bool?)sheetView.Attribute("showRowColHeaders") ?? true;
+                        sheet.FormulaView = (bool?)sheetView.Attribute("showFormulas") ?? false;
+                        sheet.ViewMode = (string)sheetView.Attribute("view") ?? "normal";
+                    }
                     var pane = document.Descendants(S + "pane").FirstOrDefault();
                     if (pane != null)
                     {
-                        sheet.FreezeColumn = Math.Min(columns, (int?)pane.Attribute("xSplit") ?? 0);
-                        sheet.FreezeRow = Math.Min(rows, (int?)pane.Attribute("ySplit") ?? 0);
+                        if ((string)pane.Attribute("state") == "split")
+                        {
+                            sheet.SplitX = (double?)pane.Attribute("xSplit") ?? 0;
+                            sheet.SplitY = (double?)pane.Attribute("ySplit") ?? 0;
+                        }
+                        else
+                        {
+                            sheet.FreezeColumn = Math.Min(columns, (int?)pane.Attribute("xSplit") ?? 0);
+                            sheet.FreezeRow = Math.Min(rows, (int?)pane.Attribute("ySplit") ?? 0);
+                        }
                     }
                     foreach (var col in document.Descendants(S + "col"))
                     {
@@ -370,6 +472,45 @@ namespace DinkCel
                     }
                     string relPath = sheetPart.Substring(0, sheetPart.LastIndexOf('/') + 1) +
                         "_rels/" + sheetPart.Substring(sheetPart.LastIndexOf('/') + 1) + ".rels";
+                    var linkTargets = new Dictionary<string, string>();
+                    if (zip.GetEntry(relPath) != null)
+                        foreach (XElement rel in ReadXml(zip, relPath).Root.Elements(P + "Relationship"))
+                            if (((string)rel.Attribute("Type") ?? "").EndsWith("/hyperlink", StringComparison.Ordinal))
+                                linkTargets[(string)rel.Attribute("Id")] = (string)rel.Attribute("Target") ?? "";
+                    foreach (XElement link in document.Descendants(S + "hyperlink"))
+                    {
+                        string reference = (string)link.Attribute("ref") ?? "";
+                        int col = ColumnIndex(reference), row = RowIndex(reference);
+                        if (col < 0 || col >= columns || row < 0 || row >= rows) continue;
+                        string target = (string)link.Attribute("location");
+                        if (target != null) target = "#" + target;
+                        else if (!linkTargets.TryGetValue((string)link.Attribute(R + "id") ?? "", out target)) continue;
+                        int key = row * columns + col;
+                        CellSnapshot cell;
+                        if (!sheet.Cells.TryGetValue(key, out cell))
+                        { cell = new CellSnapshot(); sheet.Cells[key] = cell; }
+                        if (cell.Extras == null) cell.Extras = new CellExtras();
+                        cell.Extras.Hyperlink = target;
+                    }
+                    if (zip.GetEntry(relPath) != null)
+                        foreach (XElement rel in ReadXml(zip, relPath).Root.Elements(P + "Relationship"))
+                        {
+                            if (!((string)rel.Attribute("Type") ?? "").EndsWith("/comments", StringComparison.Ordinal)) continue;
+                            string commentsPart = ResolvePart(sheetPart, (string)rel.Attribute("Target") ?? "");
+                            if (zip.GetEntry(commentsPart) == null) continue;
+                            foreach (XElement note in ReadXml(zip, commentsPart).Descendants(S + "comment"))
+                            {
+                                string reference = (string)note.Attribute("ref") ?? "";
+                                int col = ColumnIndex(reference), row = RowIndex(reference);
+                                if (col < 0 || col >= columns || row < 0 || row >= rows) continue;
+                                int key = row * columns + col;
+                                CellSnapshot cell;
+                                if (!sheet.Cells.TryGetValue(key, out cell))
+                                { cell = new CellSnapshot(); sheet.Cells[key] = cell; }
+                                if (cell.Extras == null) cell.Extras = new CellExtras();
+                                cell.Extras.Note = string.Concat(note.Descendants(S + "t").Select(t => t.Value));
+                            }
+                        }
                     if (zip.GetEntry(relPath) != null)
                     {
                         var sheetRels = ReadXml(zip, relPath);
@@ -585,15 +726,52 @@ namespace DinkCel
                             WriteXml(zip, "xl/drawings/_rels/drawing" + number + ".xml.rels",
                                 XlsxCharts.BuildDrawingRelationships(chartNumbers));
                         }
+                        var hyperlinkIds = new Dictionary<int, string>();
+                        foreach (var cell in book.Sheets[i].Cells)
+                        {
+                            string link = cell.Value.Extras == null ? "" : cell.Value.Extras.Hyperlink;
+                            if (string.IsNullOrWhiteSpace(link) || link.StartsWith("#", StringComparison.Ordinal)) continue;
+                            string relationId = "rIdHyperlink" + cell.Key;
+                            hyperlinkIds[cell.Key] = relationId;
+                            sheetRels.Add(new XElement(P + "Relationship", new XAttribute("Id", relationId),
+                                new XAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"),
+                                new XAttribute("Target", link), new XAttribute("TargetMode", "External")));
+                        }
+                        string commentsRelation = null;
+                        string vmlRelation = null;
+                        if (book.Sheets[i].Cells.Any(c => c.Value.Extras != null &&
+                            !string.IsNullOrEmpty(c.Value.Extras.Note)))
+                        {
+                            commentsRelation = "rIdComments" + number;
+                            vmlRelation = "rIdVmlComments" + number;
+                            string commentsPart = "xl/comments/comment" + number + ".xml";
+                            string vmlPart = "xl/drawings/commentsDrawing" + number + ".vml";
+                            sheetRels.Add(new XElement(P + "Relationship", new XAttribute("Id", commentsRelation),
+                                new XAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"),
+                                new XAttribute("Target", "../comments/comment" + number + ".xml")));
+                            sheetRels.Add(new XElement(P + "Relationship", new XAttribute("Id", vmlRelation),
+                                new XAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing"),
+                                new XAttribute("Target", "../drawings/commentsDrawing" + number + ".vml")));
+                            types.Add(new XElement(C + "Override", new XAttribute("PartName", "/" + commentsPart),
+                                new XAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml")));
+                            if (!types.Elements(C + "Default").Any(e => (string)e.Attribute("Extension") == "vml"))
+                                types.Add(new XElement(C + "Default", new XAttribute("Extension", "vml"),
+                                    new XAttribute("ContentType", "application/vnd.openxmlformats-officedocument.vmlDrawing")));
+                            WriteXml(zip, commentsPart, BuildComments(book.Sheets[i], columns));
+                            WriteXml(zip, vmlPart, BuildCommentsVml(book.Sheets[i], columns));
+                        }
                         if (sheetRels.HasElements)
                             WriteXml(zip, "xl/worksheets/_rels/sheet" + number + ".xml.rels", new XDocument(sheetRels));
                         WriteXml(zip, part, BuildSheet(book.Sheets[i], rows, columns, styleCatalog,
-                            tableIds, drawingRelation));
+                            tableIds, drawingRelation, hyperlinkIds, vmlRelation));
                     }
                     relationships.Add(new XElement(P + "Relationship", new XAttribute("Id", "rIdStyles"), new XAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"), new XAttribute("Target", "styles.xml")));
                     WriteXml(zip, "[Content_Types].xml", new XDocument(types));
                     WriteXml(zip, "_rels/.rels", new XDocument(new XElement(P + "Relationships", new XElement(P + "Relationship", new XAttribute("Id", "rId1"), new XAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"), new XAttribute("Target", "xl/workbook.xml")))));
-                    var workbookElement = new XElement(S + "workbook", new XAttribute(XNamespace.Xmlns + "r", R), sheetsElement);
+                    var workbookElement = new XElement(S + "workbook", new XAttribute(XNamespace.Xmlns + "r", R));
+                    if (book.StructureProtected)
+                        workbookElement.Add(new XElement(S + "workbookProtection", new XAttribute("lockStructure", 1)));
+                    workbookElement.Add(sheetsElement);
                     if (book.NamedRanges.Count > 0 || book.Sheets.Any(s => !s.Print.PrintArea.IsEmpty ||
                         s.Print.TitleRows > 0))
                     {
@@ -632,8 +810,62 @@ namespace DinkCel
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
 
+        private static XDocument BuildComments(SheetSnapshot sheet, int columns)
+        {
+            var list = new XElement(S + "commentList");
+            foreach (var pair in sheet.Cells.OrderBy(c => c.Key))
+            {
+                string note = pair.Value.Extras == null ? "" : pair.Value.Extras.Note;
+                if (string.IsNullOrEmpty(note)) continue;
+                list.Add(new XElement(S + "comment",
+                    new XAttribute("ref", ColumnName(pair.Key % columns) + (pair.Key / columns + 1)),
+                    new XAttribute("authorId", 0),
+                    new XElement(S + "text", new XElement(S + "t", note))));
+            }
+            return new XDocument(new XElement(S + "comments",
+                new XElement(S + "authors", new XElement(S + "author", "DinkCel")), list));
+        }
+
+        private static XDocument BuildCommentsVml(SheetSnapshot sheet, int columns)
+        {
+            XNamespace v = "urn:schemas-microsoft-com:vml";
+            XNamespace o = "urn:schemas-microsoft-com:office:office";
+            XNamespace x = "urn:schemas-microsoft-com:office:excel";
+            var root = new XElement("xml", new XAttribute(XNamespace.Xmlns + "v", v),
+                new XAttribute(XNamespace.Xmlns + "o", o), new XAttribute(XNamespace.Xmlns + "x", x),
+                new XElement(o + "shapelayout", new XAttribute(v + "ext", "edit"),
+                    new XElement(o + "idmap", new XAttribute(v + "ext", "edit"), new XAttribute("data", 1))),
+                new XElement(v + "shapetype", new XAttribute("id", "_x0000_t202"),
+                    new XAttribute("coordsize", "21600,21600"), new XAttribute(o + "spt", 202),
+                    new XAttribute("path", "m,l,21600r21600,l21600,xe"),
+                    new XElement(v + "stroke", new XAttribute("joinstyle", "miter")),
+                    new XElement(v + "path", new XAttribute("gradientshapeok", "t"),
+                        new XAttribute(o + "connecttype", "rect"))));
+            int shape = 1025;
+            foreach (var pair in sheet.Cells.OrderBy(c => c.Key))
+            {
+                if (pair.Value.Extras == null || string.IsNullOrEmpty(pair.Value.Extras.Note)) continue;
+                int row = pair.Key / columns, col = pair.Key % columns;
+                root.Add(new XElement(v + "shape", new XAttribute("id", "_x0000_s" + shape++),
+                    new XAttribute("type", "#_x0000_t202"),
+                    new XAttribute("style", "position:absolute;visibility:hidden"),
+                    new XAttribute("fillcolor", "#ffffe1"),
+                    new XAttribute(o + "insetmode", "auto"),
+                    new XElement(v + "textbox", new XAttribute("style", "mso-direction-alt:auto"),
+                        new XElement("div", new XAttribute("style", "text-align:left"))),
+                    new XElement(x + "ClientData", new XAttribute("ObjectType", "Note"),
+                        new XElement(x + "MoveWithCells"), new XElement(x + "SizeWithCells"),
+                        new XElement(x + "Anchor", col + ", 15, " + row + ", 2, " +
+                            Math.Min(25, col + 3) + ", 15, " + (row + 4) + ", 2"),
+                        new XElement(x + "AutoFill", "False"),
+                        new XElement(x + "Row", row), new XElement(x + "Column", col))));
+            }
+            return new XDocument(root);
+        }
+
         private static XDocument BuildSheet(SheetSnapshot sheet, int rows, int columns, XlsxStyles styles,
-            IList<string> tableIds, string drawingRelation)
+            IList<string> tableIds, string drawingRelation, IDictionary<int, string> hyperlinkIds,
+            string vmlRelation)
         {
             var root = new XElement(S + "worksheet", new XAttribute(XNamespace.Xmlns + "r", R));
             if (!sheet.TabColor.IsEmpty || sheet.Print.FitToOnePage)
@@ -647,10 +879,20 @@ namespace DinkCel
                     properties.Add(new XElement(S + "pageSetUpPr", new XAttribute("fitToPage", 1)));
                 root.Add(properties);
             }
+            var view = new XElement(S + "sheetView", new XAttribute("workbookViewId", 0),
+                new XAttribute("showGridLines", sheet.ShowGridlines ? 1 : 0),
+                new XAttribute("showRowColHeaders", sheet.ShowHeadings ? 1 : 0),
+                new XAttribute("showFormulas", sheet.FormulaView ? 1 : 0));
+            if (sheet.ViewMode == "pageBreakPreview") view.SetAttributeValue("view", "pageBreakPreview");
             if (sheet.FreezeRow > 0 || sheet.FreezeColumn > 0)
-                root.Add(new XElement(S + "sheetViews", new XElement(S + "sheetView", new XAttribute("workbookViewId", 0),
-                    new XElement(S + "pane", new XAttribute("xSplit", sheet.FreezeColumn), new XAttribute("ySplit", sheet.FreezeRow),
-                        new XAttribute("topLeftCell", ColumnName(sheet.FreezeColumn) + (sheet.FreezeRow + 1)), new XAttribute("state", "frozen")))));
+                view.Add(new XElement(S + "pane", new XAttribute("xSplit", sheet.FreezeColumn),
+                    new XAttribute("ySplit", sheet.FreezeRow),
+                    new XAttribute("topLeftCell", ColumnName(sheet.FreezeColumn) + (sheet.FreezeRow + 1)),
+                    new XAttribute("state", "frozen")));
+            else if (sheet.SplitX > 0 || sheet.SplitY > 0)
+                view.Add(new XElement(S + "pane", new XAttribute("xSplit", sheet.SplitX),
+                    new XAttribute("ySplit", sheet.SplitY), new XAttribute("state", "split")));
+            root.Add(new XElement(S + "sheetViews", view));
             if (sheet.ColumnWidths.Count > 0 || sheet.HiddenColumns.Count > 0)
             {
                 var cols = new XElement(S + "cols");
@@ -697,6 +939,8 @@ namespace DinkCel
                 data.Add(row);
             }
             root.Add(data);
+            if (sheet.Protected)
+                root.Add(new XElement(S + "sheetProtection", new XAttribute("sheet", 1)));
             var filterRules = new List<FilterCriterion>(sheet.Filters);
             if (sheet.FilterColumn >= 0 && sheet.FilterColumn < columns &&
                 !filterRules.Any(f => f.Column == sheet.FilterColumn))
@@ -812,6 +1056,20 @@ namespace DinkCel
                 entries.SetAttributeValue("count", entries.Elements().Count());
                 if (entries.HasElements) root.Add(entries);
             }
+            var hyperlinks = new XElement(S + "hyperlinks");
+            foreach (var cell in sheet.Cells)
+            {
+                string link = cell.Value.Extras == null ? "" : cell.Value.Extras.Hyperlink;
+                if (string.IsNullOrWhiteSpace(link)) continue;
+                var item = new XElement(S + "hyperlink", new XAttribute("ref",
+                    ColumnName(cell.Key % columns) + (cell.Key / columns + 1)));
+                if (link.StartsWith("#", StringComparison.Ordinal))
+                    item.SetAttributeValue("location", link.Substring(1));
+                else
+                    item.SetAttributeValue(R + "id", hyperlinkIds[cell.Key]);
+                hyperlinks.Add(item);
+            }
+            if (hyperlinks.HasElements) root.Add(hyperlinks);
             PrintSettings print = sheet.Print;
             root.Add(new XElement(S + "printOptions", new XAttribute("gridLines", print.Gridlines ? 1 : 0)));
             root.Add(new XElement(S + "pageMargins",
@@ -842,6 +1100,8 @@ namespace DinkCel
             }
             if (!string.IsNullOrEmpty(drawingRelation))
                 root.Add(new XElement(S + "drawing", new XAttribute(R + "id", drawingRelation)));
+            if (!string.IsNullOrEmpty(vmlRelation))
+                root.Add(new XElement(S + "legacyDrawing", new XAttribute(R + "id", vmlRelation)));
             if (tableIds.Count > 0)
             {
                 var parts = new XElement(S + "tableParts", new XAttribute("count", tableIds.Count));

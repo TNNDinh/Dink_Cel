@@ -20,6 +20,8 @@ namespace DinkCel
             AddMenuItem(sheet, "Thêm trang tính", Keys.None, AddSheet);
             AddMenuItem(sheet, "Đổi tên trang tính", Keys.None, RenameSheet);
             AddMenuItem(sheet, "Xóa trang tính", Keys.None, DeleteSheet);
+            AddMenuItem(sheet, "Bảo vệ/bỏ bảo vệ sheet", Keys.None, ToggleSheetProtection);
+            AddMenuItem(sheet, "Bảo vệ/bỏ bảo vệ cấu trúc workbook", Keys.None, ToggleWorkbookProtection);
             AddMenuItem(sheet, "Đặt tên vùng...", Keys.None, DefineNamedRange);
             AddMenuItem(sheet, "Đi tới vùng có tên...", Keys.None, GoToNamedRange);
             AddMenuItem(sheet, "Xóa vùng có tên...", Keys.None, DeleteNamedRange);
@@ -49,6 +51,11 @@ namespace DinkCel
             AddMenuItem(insert, "Danh sách chọn cho ô...", Keys.None, AddDropdown);
             AddMenuItem(insert, "Kiểm tra dữ liệu...", Keys.None, ConfigureValidation);
             AddMenuItem(insert, "Bỏ kiểm tra dữ liệu", Keys.None, ClearValidation);
+            AddMenuItem(insert, "Liên kết cho ô...", Keys.None, SetCellHyperlink);
+            AddMenuItem(insert, "Ghi chú cho ô...", Keys.None, SetCellNote);
+            AddMenuItem(insert, "Ảnh...", Keys.None, InsertImageObject);
+            AddMenuItem(insert, "Hình chữ nhật", Keys.None, delegate { InsertShapeObject("Rectangle"); });
+            AddMenuItem(insert, "Hình elip", Keys.None, delegate { InsertShapeObject("Ellipse"); });
             menu.Items.Add(insert);
             var cells = new ToolStripMenuItem("Ô");
             AddMenuItem(cells, "Định dạng số...", Keys.None, SetNumberFormat);
@@ -86,6 +93,84 @@ namespace DinkCel
             CommitFormulaBar();
             if (sheets.Count > activeSheetIndex)
                 sheets[activeSheetIndex] = CaptureSheet();
+        }
+
+        private void ApplySheetView()
+        {
+            grid.CellBorderStyle = showGridlines ? DataGridViewCellBorderStyle.Single :
+                DataGridViewCellBorderStyle.None;
+            grid.RowHeadersVisible = showHeadings;
+            grid.ColumnHeadersVisible = showHeadings;
+            grid.Invalidate();
+            ApplyProtectionControls();
+            if (viewMode == "pageBreakPreview")
+                status.Text = "Xem ngắt trang: các đường ngắt được đánh dấu màu xanh";
+        }
+
+        private void ApplyProtectionControls()
+        {
+            bool locked = sheets.Count > activeSheetIndex && sheets[activeSheetIndex].Protected;
+            grid.ReadOnly = locked;
+            foreach (int index in new[] { 1, 2, 5, 6, 7 })
+                if (index < menu.Items.Count) menu.Items[index].Enabled = !locked;
+            foreach (ToolStripItem item in toolbar.Items)
+            {
+                string label = item.Text ?? "";
+                item.Enabled = !locked || label == "Mới" || label == "Mở" || label == "Lưu";
+            }
+        }
+
+        private bool CanChangeWorkbookStructure()
+        {
+            if (!structureProtected) return true;
+            MessageBox.Show(this, "Workbook structure is protected.", "DinkCel",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        private void SetCellHyperlink()
+        {
+            if (grid.CurrentCell == null || grid.ReadOnly) return;
+            DataGridViewCell cell = grid.CurrentCell;
+            CellExtras extras = CellExtras.Copy(cell.Tag as CellExtras) ?? new CellExtras();
+            string value = Prompt("Liên kết (https://, mailto:, hoặc #Sheet!A1)", extras.Hyperlink);
+            if (value == null) return;
+            extras.Hyperlink = value.Trim();
+            cell.Tag = extras;
+            cell.ToolTipText = extras.Hyperlink;
+            RecordChange(); MarkDirty();
+        }
+
+        private void SetCellNote()
+        {
+            if (grid.CurrentCell == null || grid.ReadOnly) return;
+            DataGridViewCell cell = grid.CurrentCell;
+            CellExtras extras = CellExtras.Copy(cell.Tag as CellExtras) ?? new CellExtras();
+            string value = Prompt("Ghi chú", extras.Note);
+            if (value == null) return;
+            extras.Note = value;
+            cell.Tag = extras;
+            cell.ToolTipText = value;
+            RecordChange(); MarkDirty();
+        }
+
+        private void ToggleWorkbookProtection()
+        {
+            structureProtected = !structureProtected;
+            MarkDirty();
+            status.Text = structureProtected ? "Workbook structure protected" : "Workbook structure unprotected";
+        }
+
+        private void ToggleSheetProtection()
+        {
+            grid.EndEdit();
+            SaveActiveSheet();
+            SheetState sheet = sheets[activeSheetIndex];
+            sheet.Protected = !sheet.Protected;
+            ApplyProtectionControls();
+            RecordChange();
+            MarkDirty();
+            status.Text = sheet.Protected ? "Sheet protected: cells are read only" : "Sheet unprotected";
         }
 
         private void StoreHistory()
@@ -199,6 +284,7 @@ namespace DinkCel
 
         private void MoveSheet(int source, int target)
         {
+            if (!CanChangeWorkbookStructure()) return;
             if (source < 0 || source >= sheets.Count || target < 0 || target >= sheets.Count || source == target) return;
             SaveActiveSheet(); StoreHistory();
             SheetState state = sheets[source];
@@ -213,12 +299,17 @@ namespace DinkCel
 
         private void DuplicateSheet(int index)
         {
+            if (!CanChangeWorkbookStructure()) return;
             SaveActiveSheet(); StoreHistory();
             SheetState source = sheets[index];
             var copy = new SheetState { Name = source.Name + " Copy", Background = source.Background,
                 TabColor = source.TabColor,
+                Protected = source.Protected,
                 ThemeId = source.ThemeId, FreezeRow = source.FreezeRow,
-                FreezeColumn = source.FreezeColumn, FilterColumn = source.FilterColumn,
+                FreezeColumn = source.FreezeColumn, SplitX = source.SplitX, SplitY = source.SplitY,
+                ShowGridlines = source.ShowGridlines,
+                ShowHeadings = source.ShowHeadings, FormulaView = source.FormulaView,
+                ViewMode = source.ViewMode, FilterColumn = source.FilterColumn,
                 FilterValue = source.FilterValue };
             int number = 2;
             while (sheets.Any(s => string.Equals(s.Name, copy.Name, StringComparison.OrdinalIgnoreCase)))
@@ -235,6 +326,7 @@ namespace DinkCel
             copy.Rules.AddRange(source.Rules);
             copy.Tables.AddRange(source.Tables.Select(t => t.Copy()));
             copy.Charts.AddRange(source.Charts.Select(c => c.Copy()));
+            copy.Objects.AddRange(source.Objects.Select(o => o.Copy()));
             copy.Print = source.Print.Copy();
             copy.Validations.AddRange(source.Validations);
             sheets.Insert(index + 1, copy);
@@ -246,6 +338,7 @@ namespace DinkCel
 
         private void HideSheet(int index)
         {
+            if (!CanChangeWorkbookStructure()) return;
             if (sheets.Count(s => !s.Hidden) <= 1) return;
             if (index == activeSheetIndex)
             {
@@ -258,6 +351,7 @@ namespace DinkCel
 
         private void UnhideSheet()
         {
+            if (!CanChangeWorkbookStructure()) return;
             List<string> options = sheets.Where(s => s.Hidden).Select(s => s.Name).ToList();
             if (options.Count == 0) return;
             string choice = ChooseOption("Hiện trang tính", options);
@@ -269,6 +363,7 @@ namespace DinkCel
 
         private void ChooseSheetTabColor(int index)
         {
+            if (!CanChangeWorkbookStructure()) return;
             using (var picker = new ColorDialog { Color = sheets[index].TabColor.IsEmpty ? theme.Accent : sheets[index].TabColor,
                 FullOpen = true })
             {
@@ -297,6 +392,7 @@ namespace DinkCel
 
         private void AddSheet()
         {
+            if (!CanChangeWorkbookStructure()) return;
             SaveActiveSheet();
             StoreHistory();
             int number = sheets.Count + 1;
@@ -316,6 +412,7 @@ namespace DinkCel
 
         private void RenameSheet()
         {
+            if (!CanChangeWorkbookStructure()) return;
             string name = Prompt("Tên trang tính", sheets[activeSheetIndex].Name);
             if (name == null) return;
             name = name.Trim();
@@ -400,6 +497,7 @@ namespace DinkCel
 
         private void DeleteSheet()
         {
+            if (!CanChangeWorkbookStructure()) return;
             if (sheets.Count == 1 || (!sheets[activeSheetIndex].Hidden &&
                 sheets.Count(s => !s.Hidden) <= 1)) return;
             crossSheetMoves.Clear();
@@ -435,15 +533,20 @@ namespace DinkCel
 
         private static SheetState StateFromSnapshot(SheetSnapshot source)
         {
-            var state = new SheetState { Name = source.Name, Hidden = source.Hidden, TabColor = source.TabColor,
+            var state = new SheetState { Name = source.Name, Hidden = source.Hidden, Protected = source.Protected,
+                TabColor = source.TabColor,
                 Background = source.Background, ThemeId = source.ThemeId,
                 FreezeRow = source.FreezeRow, FreezeColumn = source.FreezeColumn,
+                SplitX = source.SplitX, SplitY = source.SplitY,
+                ShowGridlines = source.ShowGridlines, ShowHeadings = source.ShowHeadings,
+                FormulaView = source.FormulaView, ViewMode = source.ViewMode,
                 FilterColumn = source.FilterColumn, FilterValue = source.FilterValue };
             state.Merges.AddRange(source.Merges);
             state.Rules.AddRange(source.Rules);
             state.Filters.AddRange(source.Filters);
             state.Tables.AddRange(source.Tables.Select(t => t.Copy()));
             state.Charts.AddRange(source.Charts.Select(c => c.Copy()));
+            state.Objects.AddRange(source.Objects.Select(o => o.Copy()));
             state.Print = source.Print.Copy();
             state.Validations.AddRange(source.Validations);
             for (int r = 0; r < MaxRowCount; r++) state.RowHeights[r] = source.RowHeights.ContainsKey(r) ? source.RowHeights[r] : 27;
@@ -472,15 +575,20 @@ namespace DinkCel
 
         private SheetSnapshot SnapshotFromState(SheetState source)
         {
-            var result = new SheetSnapshot { Name = source.Name, Hidden = source.Hidden, TabColor = source.TabColor,
+            var result = new SheetSnapshot { Name = source.Name, Hidden = source.Hidden, Protected = source.Protected,
+                TabColor = source.TabColor,
                 Background = source.Background, ThemeId = source.ThemeId,
                 FreezeRow = source.FreezeRow, FreezeColumn = source.FreezeColumn,
+                SplitX = source.SplitX, SplitY = source.SplitY,
+                ShowGridlines = source.ShowGridlines, ShowHeadings = source.ShowHeadings,
+                FormulaView = source.FormulaView, ViewMode = source.ViewMode,
                 FilterColumn = source.FilterColumn, FilterValue = source.FilterValue };
             result.Merges.AddRange(source.Merges);
             result.Rules.AddRange(source.Rules);
             result.Filters.AddRange(source.Filters);
             result.Tables.AddRange(source.Tables.Select(t => t.Copy()));
             result.Charts.AddRange(source.Charts.Select(c => c.Copy()));
+            result.Objects.AddRange(source.Objects.Select(o => o.Copy()));
             result.Print = source.Print.Copy();
             result.Validations.AddRange(source.Validations);
             for (int r = 0; r < RowCount; r++) if (source.RowHeights[r] != 27) result.RowHeights[r] = source.RowHeights[r];
@@ -508,9 +616,15 @@ namespace DinkCel
         {
             var root = new XElement("sheet", new XAttribute("name", sheet.Name), new XAttribute("freezeRow", sheet.FreezeRow),
                 new XAttribute("freezeColumn", sheet.FreezeColumn), new XAttribute("filterColumn", sheet.FilterColumn),
-                new XAttribute("filterValue", sheet.FilterValue));
+                new XAttribute("splitX", sheet.SplitX), new XAttribute("splitY", sheet.SplitY),
+                new XAttribute("filterValue", sheet.FilterValue),
+                new XAttribute("showGridlines", sheet.ShowGridlines),
+                new XAttribute("showHeadings", sheet.ShowHeadings),
+                new XAttribute("formulaView", sheet.FormulaView),
+                new XAttribute("viewMode", sheet.ViewMode));
             if (!sheet.Background.IsEmpty) root.SetAttributeValue("background", ColorTranslator.ToHtml(sheet.Background));
             if (sheet.Hidden) root.SetAttributeValue("hidden", true);
+            if (sheet.Protected) root.SetAttributeValue("protected", true);
             if (!sheet.TabColor.IsEmpty) root.SetAttributeValue("tabColor", ColorTranslator.ToHtml(sheet.TabColor));
             if (!string.IsNullOrEmpty(sheet.ThemeId)) root.SetAttributeValue("theme", sheet.ThemeId);
             foreach (FilterCriterion criterion in sheet.Filters)
@@ -553,6 +667,7 @@ namespace DinkCel
             {
                 grid.EndEdit(); SaveActiveSheet();
                 var workbook = new WorkbookSnapshot(); workbook.Sheets.Clear();
+                workbook.StructureProtected = structureProtected;
                 workbook.NamedRanges.AddRange(namedRanges);
                 workbook.Pivots.AddRange(pivots);
                 foreach (SheetState sheet in sheets) workbook.Sheets.Add(SnapshotFromState(sheet));

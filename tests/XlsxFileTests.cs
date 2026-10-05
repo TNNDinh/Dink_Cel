@@ -1,6 +1,8 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
+using System.Linq;
 using System.Windows.Forms;
 using System.Xml.Linq;
 
@@ -40,7 +42,9 @@ namespace DinkCel
             try
             {
                 var book = new WorkbookSnapshot();
+                book.StructureProtected = true;
                 book.Sheets[0].Name = "Sales";
+                book.Sheets[0].Protected = true;
                 book.Sheets[0].Cells[0] = new CellSnapshot { Text = "Revenue" };
                 book.Sheets[0].Cells[26] = new CellSnapshot { Text = "1234.5", NumberFormat = "#,##0.00",
                     HasFont = true, FontName = "Consolas", FontStyle = FontStyle.Bold | FontStyle.Strikeout, FontSize = 14F,
@@ -50,8 +54,18 @@ namespace DinkCel
                         Left = new BorderEdge { Style = "thin", Color = Color.Red },
                         Bottom = new BorderEdge { Style = "double", Color = Color.Blue } } };
                 book.Sheets[0].Cells[27] = new CellSnapshot { Text = "=A2*2" };
+                book.Sheets[0].Cells[2] = new CellSnapshot { Text = "Website",
+                    Extras = new CellExtras { Hyperlink = "https://example.com/report" } };
+                book.Sheets[0].Cells[3] = new CellSnapshot { Text = "Other sheet",
+                    Extras = new CellExtras { Hyperlink = "#'Ghi chú'!A1" } };
+                book.Sheets[0].Cells[4] = new CellSnapshot { Text = "Memo",
+                    Extras = new CellExtras { Note = "Check this number" } };
                 book.Sheets[0].Merges.Add(new Rectangle(0, 0, 2, 1));
                 book.Sheets[0].FreezeRow = 1;
+                book.Sheets[0].ShowGridlines = false;
+                book.Sheets[0].ShowHeadings = false;
+                book.Sheets[0].FormulaView = true;
+                book.Sheets[0].ViewMode = "pageBreakPreview";
                 book.Sheets[0].FilterColumn = 0;
                 book.Sheets[0].FilterValue = "12";
                 book.Sheets[0].Rules.Add(new ConditionalRule { Range = new Rectangle(0, 1, 1, 1), Threshold = 1000, Color = Color.LightGreen });
@@ -60,6 +74,8 @@ namespace DinkCel
                 book.Sheets[0].HiddenRows.Add(4);
                 book.Sheets[0].HiddenColumns.Add(3);
                 var second = new SheetSnapshot { Name = "Ghi chú" };
+                second.SplitX = 1800;
+                second.SplitY = 900;
                 second.Cells[0] = new CellSnapshot { Text = "Xin chào" };
                 second.Cells[1] = new CellSnapshot { Text = "Value" };
                 second.Cells[26] = new CellSnapshot { Text = "Item" };
@@ -75,14 +91,21 @@ namespace DinkCel
                 XlsxFile.Write(path, book, 200, 26);
                 var read = XlsxFile.Read(path, 200, 26);
                 Equal(2, read.Sheets.Count);
+                Equal(true, read.StructureProtected);
+                Equal(true, read.Sheets[0].Protected);
                 Equal("Sales", read.Sheets[0].Name);
                 Equal("Ghi chú", read.Sheets[1].Name);
                 Equal("Xin chào", read.Sheets[1].Cells[0].Text);
                 Equal("NotesTable", read.Sheets[1].Tables[0].Name);
                 Equal("Notes Chart", read.Sheets[1].Charts[0].Title);
+                Equal(1800.0, read.Sheets[1].SplitX);
+                Equal(900.0, read.Sheets[1].SplitY);
                 Equal(2, read.Sheets[1].Validations[0].Choices.Count);
                 Equal("Revenue", read.NamedRanges[0].Name);
                 Equal("=A2*2", read.Sheets[0].Cells[27].Text);
+                Equal("https://example.com/report", read.Sheets[0].Cells[2].Extras.Hyperlink);
+                Equal("#'Ghi chú'!A1", read.Sheets[0].Cells[3].Extras.Hyperlink);
+                Equal("Check this number", read.Sheets[0].Cells[4].Extras.Note);
                 Equal("#,##0.00", read.Sheets[0].Cells[26].NumberFormat);
                 Equal(true, read.Sheets[0].Cells[26].HasFont);
                 Equal(FontStyle.Bold | FontStyle.Strikeout, read.Sheets[0].Cells[26].FontStyle);
@@ -101,6 +124,10 @@ namespace DinkCel
                 Equal(DataGridViewContentAlignment.TopRight, read.Sheets[0].Cells[26].Alignment);
                 Equal(1, read.Sheets[0].Merges.Count);
                 Equal(1, read.Sheets[0].FreezeRow);
+                Equal(false, read.Sheets[0].ShowGridlines);
+                Equal(false, read.Sheets[0].ShowHeadings);
+                Equal(true, read.Sheets[0].FormulaView);
+                Equal("pageBreakPreview", read.Sheets[0].ViewMode);
                 Equal(0, read.Sheets[0].FilterColumn);
                 Equal("12", read.Sheets[0].FilterValue);
                 Equal(1, read.Sheets[0].Rules.Count);
@@ -110,6 +137,22 @@ namespace DinkCel
                 XlsxFile.Write(path, book, 200, 26);
                 Equal("Updated", XlsxFile.Read(path, 200, 26).Sheets[1].Cells[0].Text);
                 Console.WriteLine("XLSX: multi-sheet round trip passed.");
+                using (var archive = ZipFile.Open(path, ZipArchiveMode.Update))
+                {
+                    using (var stream = new StreamWriter(archive.CreateEntry("xl/vbaProject.bin").Open())) stream.Write("fixture");
+                    using (var stream = new StreamWriter(archive.CreateEntry("xl/externalLinks/externalLink1.xml").Open())) stream.Write("fixture");
+                    using (var stream = new StreamWriter(archive.CreateEntry("xl/media/image1.png").Open())) stream.Write("fixture");
+                    using (var stream = new StreamWriter(archive.CreateEntry("xl/comments1.xml").Open())) stream.Write("fixture");
+                }
+                var losses = XlsxFile.PotentialLosses(path);
+                Equal(true, losses.Contains("VBA/macros"));
+                Equal(true, losses.Contains("External connections and linked workbooks"));
+                Equal(true, losses.Contains("Images, shapes or drawing placement"));
+                Equal(true, losses.Contains("Comment formatting or authors"));
+                Equal(true, losses.Any(x => x.Contains("Chart")));
+                Equal(true, losses.Contains("Split panes and independent scrolling"));
+                Equal("Updated", XlsxFile.Read(path, 200, 26).Sheets[1].Cells[0].Text);
+                Console.WriteLine("XLSX: unsupported feature audit passed.");
                 if (Environment.GetEnvironmentVariable("DINKCEL_KEEP_XLSX") == "1") Console.WriteLine(path);
                 var imported = XlsxFile.Read(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
                     "fixtures", "office.xlsx"), 200, 26);

@@ -1,5 +1,15 @@
 # DinkCel
 
+## v1.0.0 — Excel-Compatible
+
+- Workbook: nhiều sheet, nhân bản/sao chép trong workbook, đổi thứ tự, ẩn/hiện, màu tab và bảo vệ sheet/cấu trúc workbook (không đặt mật khẩu).
+- View: zoom, đường lưới, tiêu đề hàng/cột, Freeze Panes, xem công thức, Normal View và đánh dấu ngắt trang. Trạng thái Split từ Excel được đọc/ghi lại trong `.xlsx`, nhưng DinkCel chưa có các khung cuộn độc lập.
+- Objects: hyperlink và ghi chú đọc/ghi qua `.dinkcel` và `.xlsx`. Ảnh, hình chữ nhật và elip có thể chèn, di chuyển, đổi kích thước trong DinkCel và lưu bằng `.dinkcel`; hiện chưa xuất/nhập ảnh hoặc hình vẽ trong `.xlsx`.
+- Khi mở file `.xlsx`, DinkCel kiểm tra VBA, liên kết ngoài, Pivot cache, drawing, chart, công thức mảng/chia sẻ và các phần chưa nhận diện. Trước khi lưu file đã nhập từ Excel hoặc ghi đè lên file `.xlsx` có sẵn, ứng dụng liệt kê phần có thể thay đổi/mất, yêu cầu xác nhận và tạo bản `.bak` trước khi ghi đè.
+- Lưới hiện giới hạn 50.000 hàng × 26 cột. File có ô ngoài giới hạn sẽ bị từ chối khi mở để tránh mất dữ liệu âm thầm. Các tính năng Excel chưa hỗ trợ có thể thay đổi sau khi người dùng đồng ý lưu; giữ bản gốc hoặc dùng bản backup để đối chiếu.
+
+Thiết kế DinkCel Script và hàm AI được ghi tại [docs/appscript-design.md](docs/appscript-design.md) cho phiên bản sau; v1.0.0 chưa chạy script hoặc gọi AI.
+
 Ứng dụng bảng tính desktop cho Windows. Chạy trực tiếp bằng file DinkCel.exe; không cần trình duyệt, Node.js hay máy chủ web.
 
 ## Tải bản chạy

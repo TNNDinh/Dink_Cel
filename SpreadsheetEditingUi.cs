@@ -196,6 +196,8 @@ namespace DinkCel
         private bool CommitFormulaBar()
         {
             if (!formulaBarChanged || grid.CurrentCell == null) return true;
+            if (grid.ReadOnly)
+            { formulaBarChanged = false; UpdateSelection(); return false; }
             int row = grid.CurrentCell.RowIndex, column = grid.CurrentCell.ColumnIndex;
             string value = contentBox.Text;
             if (!CanAcceptValue(row, column, value))
@@ -296,6 +298,8 @@ namespace DinkCel
             bool shift = (keyData & Keys.Shift) != 0;
             bool alt = (keyData & Keys.Alt) != 0;
             if (alt) return false;
+            if (grid.ReadOnly && (key == Keys.F2 || control &&
+                (key == Keys.X || key == Keys.V || key == Keys.D || key == Keys.R))) return true;
             if (key == Keys.Escape)
             {
                 if (grid.IsCurrentCellInEditMode) grid.CancelEdit();

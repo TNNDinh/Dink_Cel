@@ -28,12 +28,15 @@ namespace DinkCel
         public bool Shrink;
         public int Indent;
         public int Rotation;
+        public string Hyperlink = "";
+        public string Note = "";
 
         public static CellExtras Copy(CellExtras source)
         {
             return source == null ? null : new CellExtras { Left = source.Left.Copy(), Right = source.Right.Copy(),
                 Top = source.Top.Copy(), Bottom = source.Bottom.Copy(), Wrap = source.Wrap,
-                Shrink = source.Shrink, Indent = source.Indent, Rotation = source.Rotation };
+                Shrink = source.Shrink, Indent = source.Indent, Rotation = source.Rotation,
+                Hyperlink = source.Hyperlink, Note = source.Note };
         }
 
         private static void WriteEdge(XElement element, string name, BorderEdge edge)
@@ -54,6 +57,8 @@ namespace DinkCel
             if (extras.Shrink) element.SetAttributeValue("shrink", true);
             if (extras.Indent != 0) element.SetAttributeValue("indent", extras.Indent);
             if (extras.Rotation != 0) element.SetAttributeValue("rotation", extras.Rotation);
+            if (!string.IsNullOrEmpty(extras.Hyperlink)) element.SetAttributeValue("hyperlink", extras.Hyperlink);
+            if (!string.IsNullOrEmpty(extras.Note)) element.SetAttributeValue("note", extras.Note);
         }
 
         private static BorderEdge ReadEdge(XElement element, string name)
@@ -70,9 +75,12 @@ namespace DinkCel
                 Bottom = ReadEdge(element, "borderBottom"), Wrap = (bool?)element.Attribute("wrap") ?? false,
                 Shrink = (bool?)element.Attribute("shrink") ?? false,
                 Indent = (int?)element.Attribute("indent") ?? 0,
-                Rotation = (int?)element.Attribute("rotation") ?? 0 };
+                Rotation = (int?)element.Attribute("rotation") ?? 0,
+                Hyperlink = (string)element.Attribute("hyperlink") ?? "",
+                Note = (string)element.Attribute("note") ?? "" };
             return result.Left.Exists || result.Right.Exists || result.Top.Exists || result.Bottom.Exists ||
-                result.Wrap || result.Shrink || result.Indent != 0 || result.Rotation != 0 ? result : null;
+                result.Wrap || result.Shrink || result.Indent != 0 || result.Rotation != 0 ||
+                result.Hyperlink.Length > 0 || result.Note.Length > 0 ? result : null;
         }
     }
 

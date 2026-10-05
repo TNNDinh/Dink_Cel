@@ -77,6 +77,20 @@ namespace DinkCel
         }
     }
 
+    internal sealed class SheetObject
+    {
+        public string Kind = "Rectangle";
+        public Rectangle Placement;
+        public string Text = "";
+        public string ImageBase64 = "";
+        public Color Fill = Color.FromArgb(73, 143, 232);
+        public SheetObject Copy()
+        {
+            return new SheetObject { Kind = Kind, Placement = Placement, Text = Text,
+                ImageBase64 = ImageBase64, Fill = Fill };
+        }
+    }
+
     internal sealed class PrintSettings
     {
         public Rectangle PrintArea;
@@ -167,6 +181,15 @@ namespace DinkCel
 
         private static void SerializeSheetMetadata(XElement root, SheetSnapshot sheet)
         {
+            foreach (SheetObject item in sheet.Objects)
+            {
+                var element = new XElement("object", new XAttribute("kind", item.Kind),
+                    new XAttribute("text", item.Text),
+                    new XAttribute("fill", ColorTranslator.ToHtml(item.Fill)),
+                    new XAttribute("image", item.ImageBase64));
+                SetRange(element, item.Placement);
+                root.Add(element);
+            }
             foreach (TableDefinition table in sheet.Tables)
             {
                 var element = new XElement("table", new XAttribute("name", table.Name),
@@ -237,6 +260,11 @@ namespace DinkCel
 
         private static void ReadSheetMetadata(XElement root, SheetSnapshot sheet)
         {
+            foreach (XElement element in root.Elements("object"))
+                sheet.Objects.Add(new SheetObject { Kind = (string)element.Attribute("kind") ?? "Rectangle",
+                    Placement = GetRange(element), Text = (string)element.Attribute("text") ?? "",
+                    ImageBase64 = (string)element.Attribute("image") ?? "",
+                    Fill = ColorTranslator.FromHtml((string)element.Attribute("fill") ?? "#498FE8") });
             foreach (XElement element in root.Elements("table"))
             {
                 var table = new TableDefinition { Name = (string)element.Attribute("name") ?? "Table",

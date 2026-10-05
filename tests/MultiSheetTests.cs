@@ -89,6 +89,24 @@ namespace DinkCel
                     Equal(null, grid[1, 0].Value);
                     Call(form, "Redo");
                     Equal("=LEN(Sheet1!A1)", grid[1, 0].Value);
+                    grid[0, 0].Tag = new CellExtras { Note = "Second sheet note",
+                        Hyperlink = "https://example.com" };
+                    ((HashSet<int>)Field(form, "changedCells")).Add(0);
+                    ((List<SheetObject>)Field(form, "objects")).Add(new SheetObject
+                    { Kind = "Rectangle", Text = "Approval", Placement = new Rectangle(2, 2, 4, 5) });
+                    using (var bitmap = new Bitmap(2, 2))
+                    using (var bytes = new MemoryStream())
+                    {
+                        bitmap.Save(bytes, System.Drawing.Imaging.ImageFormat.Png);
+                        ((List<SheetObject>)Field(form, "objects")).Add(new SheetObject
+                        { Kind = "Image", ImageBase64 = Convert.ToBase64String(bytes.ToArray()),
+                            Placement = new Rectangle(7, 2, 3, 4) });
+                    }
+                    Call(form, "RecordChange");
+                    Call(form, "ToggleSheetProtection");
+                    Equal(true, grid.ReadOnly);
+                    Call(form, "ToggleWorkbookProtection");
+                    Equal(true, Field(form, "structureProtected"));
                     Equal(true, Call(form, "WriteWorkbook", path));
                     Equal(false, Field(form, "dirty"));
                     Equal(true, Call(form, "WriteXlsx", xlsx));
@@ -106,6 +124,12 @@ namespace DinkCel
                     Call(reopened, "SwitchSheet", 1);
                     Equal("Second", grid[0, 0].Value);
                     Equal("5", grid[1, 0].FormattedValue);
+                    Equal(true, grid.ReadOnly);
+                    Equal(true, Field(reopened, "structureProtected"));
+                    Equal("Second sheet note", ((CellExtras)grid[0, 0].Tag).Note);
+                    Equal("Approval", ((List<SheetObject>)Field(reopened, "objects"))[0].Text);
+                    Equal("Image", ((List<SheetObject>)Field(reopened, "objects"))[1].Kind);
+                    Equal(true, ((List<SheetObject>)Field(reopened, "objects"))[1].ImageBase64.Length > 0);
                     reopened.Close();
                 }
                 using (var reopened = new SpreadsheetForm(xlsx))
@@ -118,6 +142,9 @@ namespace DinkCel
                     Call(reopened, "SwitchSheet", 1);
                     Equal("Second", grid[0, 0].Value);
                     Equal("5", grid[1, 0].FormattedValue);
+                    Equal(true, grid.ReadOnly);
+                    Equal(true, Field(reopened, "structureProtected"));
+                    Equal("https://example.com", ((CellExtras)grid[0, 0].Tag).Hyperlink);
                     reopened.Close();
                 }
                 foreach (string file in new[] { xls, ods })
