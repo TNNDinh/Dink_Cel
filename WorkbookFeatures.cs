@@ -48,12 +48,21 @@ namespace DinkCel
     {
         public int Column;
         public string Value = "";
+        public string Operator = "Equals";
+        public string Value2 = "";
+    }
+
+    internal sealed class PivotCalculatedField
+    {
+        public string Name = "";
+        public string Formula = "";
     }
 
     internal sealed class ChartDefinition
     {
         public string Title = "Chart";
         public string Kind = "Column";
+        public string PivotSource = "";
         public Rectangle Range;
         public Rectangle Placement;
         public string AxisTitleX = "";
@@ -68,7 +77,7 @@ namespace DinkCel
         public ChartDefinition Copy()
         {
             var copy = new ChartDefinition { Title = Title, Kind = Kind, Range = Range,
-                Placement = Placement, AxisTitleX = AxisTitleX, AxisTitleY = AxisTitleY,
+                Placement = Placement, PivotSource = PivotSource, AxisTitleX = AxisTitleX, AxisTitleY = AxisTitleY,
                 Legend = Legend, DataLabels = DataLabels, Gridlines = Gridlines };
             copy.SeriesColumns.AddRange(SeriesColumns);
             foreach (var entry in SeriesNames) copy.SeriesNames[entry.Key] = entry.Value;
@@ -139,6 +148,8 @@ namespace DinkCel
         public string Name;
         public string Sheet;
         public Rectangle Range;
+        public string Formula = "";
+        public string ScopeSheet = "";
     }
 
     internal sealed class PivotDefinition
@@ -156,6 +167,7 @@ namespace DinkCel
         public readonly List<PivotAxisField> Columns = new List<PivotAxisField>();
         public readonly List<PivotValueField> Values = new List<PivotValueField>();
         public readonly List<PivotFilterField> Filters = new List<PivotFilterField>();
+        public readonly List<PivotCalculatedField> CalculatedFields = new List<PivotCalculatedField>();
         public readonly HashSet<string> Collapsed = new HashSet<string>();
         public bool GrandTotal = true;
         public bool Subtotal = true;
@@ -210,6 +222,7 @@ namespace DinkCel
             {
                 var element = new XElement("chart", new XAttribute("title", chart.Title),
                     new XAttribute("kind", chart.Kind), new XAttribute("axisX", chart.AxisTitleX),
+                    new XAttribute("pivotSource", chart.PivotSource ?? ""),
                     new XAttribute("axisY", chart.AxisTitleY), new XAttribute("legend", chart.Legend),
                     new XAttribute("labels", chart.DataLabels), new XAttribute("gridlines", chart.Gridlines));
                 SetRange(element, chart.Range);
@@ -289,6 +302,7 @@ namespace DinkCel
             {
                 var chart = new ChartDefinition { Title = (string)element.Attribute("title") ?? "Chart",
                     Kind = (string)element.Attribute("kind") ?? "Column", Range = GetRange(element),
+                    PivotSource = (string)element.Attribute("pivotSource") ?? "",
                     AxisTitleX = (string)element.Attribute("axisX") ?? "",
                     AxisTitleY = (string)element.Attribute("axisY") ?? "",
                     Legend = (bool?)element.Attribute("legend") ?? true,
@@ -355,7 +369,9 @@ namespace DinkCel
             foreach (NamedRange named in names)
             {
                 var element = new XElement("namedRange", new XAttribute("name", named.Name),
-                    new XAttribute("sheet", named.Sheet));
+                    new XAttribute("sheet", named.Sheet ?? ""),
+                    new XAttribute("scopeSheet", named.ScopeSheet ?? ""),
+                    new XAttribute("formula", named.Formula ?? ""));
                 SetRange(element, named.Range);
                 root.Add(element);
             }
@@ -383,7 +399,11 @@ namespace DinkCel
                         new XAttribute("aggregate", field.Aggregate)));
                 foreach (PivotFilterField field in pivot.Filters)
                     element.Add(new XElement("filterField", new XAttribute("column", field.Column),
-                        new XAttribute("value", field.Value)));
+                        new XAttribute("value", field.Value),
+                        new XAttribute("operator", field.Operator), new XAttribute("value2", field.Value2)));
+                foreach (PivotCalculatedField field in pivot.CalculatedFields)
+                    element.Add(new XElement("calculatedField", new XAttribute("name", field.Name),
+                        new XAttribute("formula", field.Formula)));
                 foreach (string group in pivot.Collapsed) element.Add(new XElement("collapsed", group));
                 root.Add(element);
             }
@@ -393,7 +413,9 @@ namespace DinkCel
         {
             foreach (XElement element in root.Elements("namedRange"))
                 workbook.NamedRanges.Add(new NamedRange { Name = (string)element.Attribute("name"),
-                    Sheet = (string)element.Attribute("sheet"), Range = GetRange(element) });
+                    Sheet = (string)element.Attribute("sheet") ?? "",
+                    ScopeSheet = (string)element.Attribute("scopeSheet") ?? "",
+                    Formula = (string)element.Attribute("formula") ?? "", Range = GetRange(element) });
             foreach (XElement element in root.Elements("pivot"))
             {
                 var pivot = new PivotDefinition { SourceSheet = (string)element.Attribute("sourceSheet"),
@@ -415,7 +437,13 @@ namespace DinkCel
                 foreach (XElement field in element.Elements("valueField")) pivot.Values.Add(new PivotValueField
                 { Column = (int)field.Attribute("column"), Aggregate = (string)field.Attribute("aggregate") ?? "Sum" });
                 foreach (XElement field in element.Elements("filterField")) pivot.Filters.Add(new PivotFilterField
-                { Column = (int)field.Attribute("column"), Value = (string)field.Attribute("value") ?? "" });
+                { Column = (int)field.Attribute("column"), Value = (string)field.Attribute("value") ?? "",
+                    Operator = (string)field.Attribute("operator") ?? "Equals",
+                    Value2 = (string)field.Attribute("value2") ?? "" });
+                foreach (XElement field in element.Elements("calculatedField"))
+                    pivot.CalculatedFields.Add(new PivotCalculatedField
+                    { Name = (string)field.Attribute("name") ?? "",
+                        Formula = (string)field.Attribute("formula") ?? "" });
                 foreach (XElement collapsed in element.Elements("collapsed")) pivot.Collapsed.Add(collapsed.Value);
                 workbook.Pivots.Add(pivot);
             }

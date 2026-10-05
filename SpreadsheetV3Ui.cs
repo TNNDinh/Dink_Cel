@@ -165,20 +165,52 @@ namespace DinkCel
         {
             Rectangle range = SelectionRange(false);
             if (range.IsEmpty) return;
-            string name = Prompt("Tên vùng", "Vung" + (namedRanges.Count + 1));
+            DefineName("", range);
+        }
+
+        private void DefineNamedFormula()
+        {
+            string formula = Prompt("Named formula (starts with =)", "=A1*2");
+            if (formula == null) return;
+            if (!formula.StartsWith("=", StringComparison.Ordinal) || formula.Length < 2)
+            { MessageBox.Show(this, "Formula must start with =."); return; }
+            DefineName(formula, Rectangle.Empty);
+        }
+
+        private NamedRange FindName(string name, string sheet)
+        {
+            NamedRange local = namedRanges.FirstOrDefault(n =>
+                string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase) &&
+                !String.IsNullOrEmpty(n.ScopeSheet) &&
+                string.Equals(n.ScopeSheet, sheet, StringComparison.OrdinalIgnoreCase));
+            return local ?? namedRanges.FirstOrDefault(n =>
+                string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase) &&
+                String.IsNullOrEmpty(n.ScopeSheet));
+        }
+
+        private void DefineName(string formula, Rectangle range)
+        {
+            string name = Prompt("Name", "Name" + (namedRanges.Count + 1));
             if (name == null) return;
             name = name.Trim();
-            if (!ValidName(name) || namedRanges.Any(n => string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase)))
-            { MessageBox.Show(this, "Tên vùng không hợp lệ hoặc đã tồn tại."); return; }
-            namedRanges.Add(new NamedRange { Name = name, Sheet = sheets[activeSheetIndex].Name, Range = range });
-            Recalculate(); MarkDirty(); status.Text = "Đã đặt tên vùng " + name;
+            string scope = ChooseOption("Scope", new[] { "Workbook", "Current sheet" });
+            if (scope == null) return;
+            string scopeSheet = scope == "Current sheet" ? sheets[activeSheetIndex].Name : "";
+            if (!ValidName(name) || namedRanges.Any(n =>
+                string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(n.ScopeSheet ?? "", scopeSheet, StringComparison.OrdinalIgnoreCase)))
+            { MessageBox.Show(this, "Invalid name or duplicate in this scope."); return; }
+            namedRanges.Add(new NamedRange { Name = name, Sheet = sheets[activeSheetIndex].Name,
+                ScopeSheet = scopeSheet, Range = range, Formula = formula });
+            Recalculate(); MarkDirty(); status.Text = "Defined " + name;
         }
 
         private void GoToNamedRange()
         {
-            string name = ChooseOption("Đi tới vùng", namedRanges.Select(n => n.Name).ToList());
-            if (name == null) return;
-            NamedRange named = namedRanges.First(n => n.Name == name);
+            var available = namedRanges.Where(n => String.IsNullOrEmpty(n.Formula) && !n.Range.IsEmpty).ToList();
+            string label = ChooseOption("Go to named range", available.Select(NameLabel).ToList());
+            if (label == null) return;
+            NamedRange named = available.First(n => NameLabel(n) == label);
             int index = sheets.FindIndex(s => s.Name == named.Sheet);
             if (index < 0) return;
             SwitchSheet(index);
@@ -191,10 +223,16 @@ namespace DinkCel
 
         private void DeleteNamedRange()
         {
-            string name = ChooseOption("Xóa vùng có tên", namedRanges.Select(n => n.Name).ToList());
-            if (name == null) return;
-            namedRanges.RemoveAll(n => n.Name == name);
+            string label = ChooseOption("Delete name", namedRanges.Select(NameLabel).ToList());
+            if (label == null) return;
+            namedRanges.RemoveAll(n => NameLabel(n) == label);
             Recalculate(); MarkDirty();
+        }
+
+        private static string NameLabel(NamedRange named)
+        {
+            return named.Name + " (" + (String.IsNullOrEmpty(named.ScopeSheet) ?
+                "Workbook" : named.ScopeSheet) + ")";
         }
 
         private void CreateChart()

@@ -80,6 +80,7 @@ namespace DinkCel
         public readonly List<SheetSnapshot> Sheets = new List<SheetSnapshot>();
         public readonly List<NamedRange> NamedRanges = new List<NamedRange>();
         public readonly List<PivotDefinition> Pivots = new List<PivotDefinition>();
+        public readonly List<ScenarioDefinition> Scenarios = new List<ScenarioDefinition>();
         public Dictionary<int, CellSnapshot> Cells { get { return Sheets[0].Cells; } }
         public Color Background = Color.FromArgb(232, 240, 248);
         public bool HasBackground;
@@ -212,6 +213,7 @@ namespace DinkCel
         private readonly List<ValidationRule> validations = new List<ValidationRule>();
         private readonly List<NamedRange> namedRanges = new List<NamedRange>();
         private readonly List<PivotDefinition> pivots = new List<PivotDefinition>();
+        private readonly List<ScenarioDefinition> scenarios = new List<ScenarioDefinition>();
         private int freezeRow;
         private int freezeColumn;
         private double splitX;
@@ -419,6 +421,7 @@ namespace DinkCel
             AddMenuItem(viewMenu, "Màn hình bắt đầu", Keys.None, ShowWelcome);
             menu.Items.Add(viewMenu);
             AddSpreadsheetMenus();
+            AddAdvancedExcelMenus();
             var scriptMenu = new ToolStripMenuItem("Script");
             AddMenuItem(scriptMenu, "Script Editor...", Keys.Control | Keys.Shift | Keys.J, OpenScriptEditor);
             AddMenuItem(scriptMenu, "AI settings...", Keys.None, OpenAiSettings);
@@ -820,8 +823,8 @@ namespace DinkCel
             }, sheets.Count > activeSheetIndex ? sheets[activeSheetIndex].Name : "Sheet1",
                 MaxRowCount, ColumnCount, delegate(string name)
                 {
-                    NamedRange named = namedRanges.FirstOrDefault(n =>
-                        string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase));
+                    NamedRange named = FindName(name, "");
+                    if (named != null && !String.IsNullOrEmpty(named.Formula)) return null;
                     return named == null ? null : new FormulaNamedRange
                     {
                         Sheet = named.Sheet,
@@ -831,6 +834,22 @@ namespace DinkCel
                         LastColumn = named.Range.Right - 1
                     };
                 }, null, ResolveStructuredRange);
+            formulaEngine.ResolveScopedRange = delegate(string name, string sheet)
+            {
+                NamedRange named = FindName(name, sheet);
+                if (named != null && !String.IsNullOrEmpty(named.Formula)) return null;
+                return named == null ? null : new FormulaNamedRange
+                {
+                    Sheet = named.Sheet, FirstRow = named.Range.Top,
+                    FirstColumn = named.Range.Left, LastRow = named.Range.Bottom - 1,
+                    LastColumn = named.Range.Right - 1
+                };
+            };
+            formulaEngine.ResolveNamedFormula = delegate(string name, string sheet)
+            {
+                NamedRange named = FindName(name, sheet);
+                return named == null ? null : named.Formula;
+            };
             if (formulaEngine != null && !String.IsNullOrWhiteSpace(scriptCode))
                 ConfigureCustomFunctions(formulaEngine);
             if (changedRow >= 0 && changedColumn >= 0 && !dynamicArrays)
@@ -1531,7 +1550,7 @@ namespace DinkCel
             objects.Clear(); RefreshObjectOverlays();
             printSettings = new PrintSettings();
             RefreshChartOverlays();
-            namedRanges.Clear(); pivots.Clear();
+            namedRanges.Clear(); pivots.Clear(); scenarios.Clear();
             freezeRow = freezeColumn = 0;
             splitX = splitY = 0;
             showGridlines = showHeadings = true;
@@ -1594,6 +1613,7 @@ namespace DinkCel
                     aiEnabled = false;
                     namedRanges.Clear(); namedRanges.AddRange(workbook.NamedRanges);
                     pivots.Clear(); pivots.AddRange(workbook.Pivots);
+                    scenarios.Clear(); scenarios.AddRange(workbook.Scenarios);
                     foreach (SheetSnapshot snapshot in workbook.Sheets)
                     {
                         SheetState state = StateFromSnapshot(snapshot);
@@ -1673,6 +1693,7 @@ namespace DinkCel
                 workbook.HasBackground = true;
             }
             ReadWorkbookMetadata(document.Root, workbook);
+            ReadScenarios(document.Root, workbook);
             List<XElement> sheetElements = new List<XElement>(document.Root.Elements("sheet"));
             if (sheetElements.Count > 0)
             {
@@ -1837,6 +1858,29 @@ namespace DinkCel
                     "DinkCel — scripts omitted", MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 return false;
+            if (!string.Equals(Path.GetExtension(path), ".dinkcel", StringComparison.OrdinalIgnoreCase) &&
+                scenarios.Count > 0 &&
+                MessageBox.Show(this,
+                    "Scenarios are stored only in .dinkcel files. This export will omit them. Save anyway?",
+                    "DinkCel — scenarios omitted", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return false;
+            if (!string.Equals(Path.GetExtension(path), ".dinkcel", StringComparison.OrdinalIgnoreCase) &&
+                pivots.Count > 0 &&
+                MessageBox.Show(this,
+                    "Pivot results will be saved as cells, but Pivot definitions, slicers, timelines, " +
+                    "calculated fields and Pivot Chart links are stored only in .dinkcel. Save anyway?",
+                    "DinkCel - Pivot settings omitted", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return false;
+            if (!string.Equals(Path.GetExtension(path), ".dinkcel", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) &&
+                namedRanges.Any(n => !String.IsNullOrEmpty(n.Formula) || !String.IsNullOrEmpty(n.ScopeSheet)) &&
+                MessageBox.Show(this,
+                    "Named formulas and sheet-scoped names are preserved in .dinkcel and .xlsx only. Save anyway?",
+                    "DinkCel - names omitted", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return false;
             if (string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) &&
                 (objects.Count > 0 || sheets.Any(s => s.Objects.Count > 0)) &&
                 MessageBox.Show(this,
@@ -1985,6 +2029,7 @@ namespace DinkCel
                 foreach (SheetState state in sheets)
                     root.Add(SerializeSheet(SnapshotFromState(state)));
                 SerializeWorkbookMetadata(root, namedRanges, pivots);
+                SerializeScenarios(root);
                 new XDocument(root).Save(path);
                 currentPath = path;
                 csvDocument = null;

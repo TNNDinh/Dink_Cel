@@ -710,12 +710,20 @@ namespace DinkCel
                         continue;
                     }
                     if (name.Length == 0 || name.StartsWith("_xlnm.", StringComparison.OrdinalIgnoreCase)) continue;
-                    int bang = defined.Value.LastIndexOf('!');
-                    if (bang < 0) continue;
-                    string sheetName = defined.Value.Substring(0, bang).Trim('\'').Replace("''", "'");
-                    Rectangle range = ParseArea(defined.Value.Substring(bang + 1), rows, columns);
-                    if (!range.IsEmpty) result.NamedRanges.Add(new NamedRange
-                    { Name = name, Sheet = sheetName, Range = range });
+                    int localIndex = (int?)defined.Attribute("localSheetId") ?? -1;
+                    if (localIndex >= result.Sheets.Count) continue;
+                    string scope = localIndex < 0 ? "" : result.Sheets[localIndex].Name;
+                    var definedAddress = System.Text.RegularExpressions.Regex.Match(defined.Value,
+                        @"^(?:'(?<quoted>(?:[^']|'')+)'|(?<plain>[^!]+))!(?<area>\$?[A-Za-z]{1,3}\$?[1-9][0-9]*(?::\$?[A-Za-z]{1,3}\$?[1-9][0-9]*)?)$");
+                    Rectangle range = definedAddress.Success ? ParseArea(definedAddress.Groups["area"].Value, rows, columns) : Rectangle.Empty;
+                    if (!range.IsEmpty)
+                        result.NamedRanges.Add(new NamedRange { Name = name,
+                            Sheet = (definedAddress.Groups["quoted"].Success ? definedAddress.Groups["quoted"].Value :
+                                definedAddress.Groups["plain"].Value).Replace("''", "'"),
+                            ScopeSheet = scope, Range = range });
+                    else
+                        result.NamedRanges.Add(new NamedRange { Name = name, Sheet = scope,
+                            ScopeSheet = scope, Formula = "=" + ImportFormula(defined.Value) });
                 }
                 return result;
             }
@@ -840,12 +848,20 @@ namespace DinkCel
                     {
                         var definitions = new XElement(S + "definedNames");
                         foreach (NamedRange named in book.NamedRanges)
-                            if (!named.Range.IsEmpty)
-                            {
-                                string quotedSheet = "'" + named.Sheet.Replace("'", "''") + "'";
-                                definitions.Add(new XElement(S + "definedName", new XAttribute("name", named.Name),
-                                    quotedSheet + "!" + AbsoluteRangeAddress(named.Range)));
-                            }
+                        {
+                            int scopeIndex = String.IsNullOrEmpty(named.ScopeSheet) ? -1 :
+                                book.Sheets.FindIndex(s => String.Equals(s.Name, named.ScopeSheet,
+                                    StringComparison.OrdinalIgnoreCase));
+                            if (!String.IsNullOrEmpty(named.ScopeSheet) && scopeIndex < 0) continue;
+                            string expression = !String.IsNullOrEmpty(named.Formula) ?
+                                ExportFormula(named.Formula.TrimStart('=')) :
+                                named.Range.IsEmpty || String.IsNullOrEmpty(named.Sheet) ? "" :
+                                "'" + named.Sheet.Replace("'", "''") + "'!" + AbsoluteRangeAddress(named.Range);
+                            if (expression.Length == 0) continue;
+                            var element = new XElement(S + "definedName", new XAttribute("name", named.Name), expression);
+                            if (scopeIndex >= 0) element.Add(new XAttribute("localSheetId", scopeIndex));
+                            definitions.Add(element);
+                        }
                         for (int i = 0; i < book.Sheets.Count; i++)
                         {
                             SheetSnapshot sheet = book.Sheets[i];

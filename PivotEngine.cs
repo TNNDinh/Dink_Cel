@@ -51,6 +51,17 @@ namespace DinkCel
             if (mode == "None") return raw;
             DateTime date;
             if (!DataTools.Temporal(raw, out date)) return raw;
+            if (mode == "Quarter") return date.ToString("yyyy", CultureInfo.InvariantCulture) +
+                "-Q" + ((date.Month - 1) / 3 + 1);
+            if (mode == "Week")
+            {
+                int weekday = ((int)date.DayOfWeek + 6) % 7;
+                DateTime thursday = date.AddDays(3 - weekday);
+                int weekYear = thursday.Year;
+                int week = (thursday.DayOfYear - 1) / 7 + 1;
+                return weekYear.ToString("0000", CultureInfo.InvariantCulture) + "-W" +
+                    week.ToString("00", CultureInfo.InvariantCulture);
+            }
             return mode == "Year" ? date.ToString("yyyy", CultureInfo.InvariantCulture) :
                 mode == "Month" ? date.ToString("yyyy-MM", CultureInfo.InvariantCulture) :
                 date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -78,8 +89,21 @@ namespace DinkCel
             {
                 bool accepted = true;
                 foreach (PivotFilterField filter in definition.Filters)
-                    if (!string.Equals(read(row, filter.Column) ?? "", filter.Value,
+                {
+                    string raw = read(row, filter.Column) ?? "";
+                    if (filter.Operator == "BetweenDate")
+                    {
+                        DateTime value, start, end;
+                        if (!DataTools.Temporal(raw, out value) ||
+                            !DateTime.TryParse(filter.Value, CultureInfo.InvariantCulture,
+                                DateTimeStyles.None, out start) ||
+                            !DateTime.TryParse(filter.Value2, CultureInfo.InvariantCulture,
+                                DateTimeStyles.None, out end) || value.Date < start.Date || value.Date > end.Date)
+                        { accepted = false; break; }
+                    }
+                    else if (!string.Equals(raw, filter.Value,
                         StringComparison.CurrentCultureIgnoreCase)) { accepted = false; break; }
+                }
                 if (!accepted) continue;
                 string[] rowParts = rows.Select(f => GroupValue(read(row, f.Column), f.DateGroup)).ToArray();
                 string[] colParts = columns.Select(f => GroupValue(read(row, f.Column), f.DateGroup)).ToArray();

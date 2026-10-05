@@ -241,12 +241,110 @@ namespace DinkCel
                 }
                 TestAiClient();
                 TestDynamicArrayUi(directory);
+                TestAdvancedExcel(directory);
+                TestNamedObjects(directory);
                 Console.WriteLine("Open file: CSV and older .dinkcel passed.");
             }
             finally
             {
                 Directory.Delete(directory, true);
             }
+        }
+
+        private static void TestAdvancedExcel(string directory)
+        {
+            double solved;
+            Equal(true, GoalSeekSolver.Solve(x => x * x, 25, 2, out solved));
+            Equal(true, Math.Abs(solved - 5) < 1e-6);
+            Equal("A,B", AdvancedData.SplitLine("\"A,B\",C", ',')[0]);
+            Equal("C", AdvancedData.SplitLine("\"A,B\",C", ',')[1]);
+            Equal(2, AdvancedData.UniqueRows(new[] { new[] { "A", "1" },
+                new[] { "a", "1" }, new[] { "B", "2" } }, false).Count);
+            Equal(2, AdvancedData.UniqueRows(new[] { new[] { "A\u001fB", "C" },
+                new[] { "A", "B\u001fC" } }, false).Count);
+            var pattern = AdvancedData.InferFlashFill(new[] {
+                Tuple.Create("John Smith", "", "John"), Tuple.Create("Jane Doe", "", "Jane") });
+            Equal("Alan", pattern("Alan Turing", ""));
+            var criteria = new[] {
+                new System.Collections.Generic.Dictionary<string, string> { { "Amount", ">20" } },
+                new System.Collections.Generic.Dictionary<string, string> { { "City", "Hanoi" } } };
+            Equal(true, AdvancedData.MatchesCriteria(new[] { "Hue", "30" },
+                new[] { "City", "Amount" }, criteria));
+            Equal(false, AdvancedData.MatchesCriteria(new[] { "Hue", "10" },
+                new[] { "City", "Amount" }, criteria));
+            string path = Path.Combine(directory, "scenarios.dinkcel");
+            using (var form = new SpreadsheetForm(null))
+            {
+                form.Show(); Application.DoEvents();
+                var grid = (DataGridView)Field(form, "grid");
+                grid[0, 0].Value = "2"; grid[1, 0].Value = "=A1*2";
+                double value = (double)Invoke(form, "EvaluateWhatIf", 0, 1,
+                    new System.Collections.Generic.Dictionary<int, string> { { 0, "50" } });
+                Equal(100.0, value);
+                var scenario = new ScenarioDefinition { Name = "High", Sheet = "Sheet1" };
+                scenario.Values[0] = "50";
+                ((System.Collections.Generic.List<ScenarioDefinition>)Field(form, "scenarios")).Add(scenario);
+                Equal(true, Invoke(form, "WriteWorkbook", path));
+                form.Close();
+            }
+            using (var form = new SpreadsheetForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                var scenarios = (System.Collections.Generic.List<ScenarioDefinition>)Field(form, "scenarios");
+                Equal(1, scenarios.Count); Equal("50", scenarios[0].Values[0]);
+                form.Close();
+            }
+        }
+
+        private static void TestNamedObjects(string directory)
+        {
+            string native = Path.Combine(directory, "names.dinkcel");
+            string xlsx = Path.Combine(directory, "names.xlsx");
+            using (var form = new SpreadsheetForm(null))
+            {
+                form.Show(); Application.DoEvents();
+                var names = (System.Collections.Generic.List<NamedRange>)Field(form, "namedRanges");
+                names.Add(new NamedRange { Name = "Scale", Formula = "=A1*2", Sheet = "Sheet1" });
+                names.Add(new NamedRange { Name = "LoopA", Formula = "=LoopB+1", Sheet = "Sheet1" });
+                names.Add(new NamedRange { Name = "LoopB", Formula = "=LoopA+1", Sheet = "Sheet1" });
+                var grid = (DataGridView)Field(form, "grid");
+                grid[0, 0].Value = "4";
+                grid[1, 0].Value = "=Scale";
+                grid[2, 0].Value = "=LoopA";
+                form.GetType().GetMethod("Recalculate", BindingFlags.Instance |
+                    BindingFlags.NonPublic, null, Type.EmptyTypes, null).Invoke(form, null);
+                Equal("8", grid[1, 0].FormattedValue);
+                Equal("#CYCLE!", grid[2, 0].FormattedValue);
+                Call(form, "AddSheet");
+                grid = (DataGridView)Field(form, "grid");
+                string secondSheet = ((System.Collections.Generic.List<SheetState>)Field(form, "sheets"))[1].Name;
+                names.Add(new NamedRange { Name = "Scale", Formula = "=A1*3",
+                    ScopeSheet = secondSheet, Sheet = secondSheet });
+                names.Add(new NamedRange { Name = "Origin", Sheet = "Sheet1",
+                    ScopeSheet = secondSheet, Range = new Rectangle(0, 0, 1, 1) });
+                grid[0, 0].Value = "5";
+                grid[1, 0].Value = "=Scale";
+                grid[2, 0].Value = "=Origin";
+                form.GetType().GetMethod("Recalculate", BindingFlags.Instance |
+                    BindingFlags.NonPublic, null, Type.EmptyTypes, null).Invoke(form, null);
+                Equal("15", grid[1, 0].FormattedValue);
+                Equal("4", grid[2, 0].FormattedValue);
+                Equal(true, Invoke(form, "WriteWorkbook", native));
+                Equal(true, Invoke(form, "WriteXlsx", xlsx));
+                form.Close();
+            }
+            foreach (string path in new[] { native, xlsx })
+                using (var form = new SpreadsheetForm(path))
+                {
+                    form.Show(); Application.DoEvents();
+                    var grid = (DataGridView)Field(form, "grid");
+                    Equal("8", grid[1, 0].FormattedValue);
+                    Equal("#CYCLE!", grid[2, 0].FormattedValue);
+                    Call(form, "SwitchSheet", 1);
+                    Equal("15", grid[1, 0].FormattedValue);
+                    Equal("4", grid[2, 0].FormattedValue);
+                    form.Close();
+                }
         }
 
         private static void TestDynamicArrayUi(string directory)

@@ -78,6 +78,28 @@ namespace DinkCel
             Check(result.Rows.Any(r => r[0].Contains("▶ North") && r[total] == "35") &&
                 !result.Rows.Any(r => r[0].Trim() == "A"), "pivot collapse");
 
+            pivot.Collapsed.Clear();
+            pivot.Filters.Clear();
+            pivot.Columns[0].DateGroup = "Quarter";
+            result = PivotEngine.Build(pivot, read, 100, 26);
+            Check(result.Rows[0].Any(v => v != null && v.StartsWith("2024-Q1")), "quarter grouping");
+            pivot.Columns[0].DateGroup = "Week";
+            result = PivotEngine.Build(pivot, read, 100, 26);
+            Check(result.Rows[0].Any(v => v != null && v.StartsWith("2024-W")), "week grouping");
+            string[,] boundary = { { "Region", "Date", "Amount" },
+                { "North", "2024-12-30", "10" } };
+            var weekly = new PivotDefinition { SourceRange = new Rectangle(0, 0, 3, 2) };
+            weekly.Rows.Add(new PivotAxisField { Column = 0 });
+            weekly.Columns.Add(new PivotAxisField { Column = 1, DateGroup = "Week" });
+            weekly.Values.Add(new PivotValueField { Column = 2, Aggregate = "Sum" });
+            PivotResult boundaryResult = PivotEngine.Build(weekly, (r, c) => boundary[r, c], 100, 26);
+            Check(boundaryResult.Rows[0].Any(v => v != null && v.StartsWith("2025-W01")),
+                "ISO week year boundary");
+            pivot.Filters.Add(new PivotFilterField { Column = 2, Operator = "BetweenDate",
+                Value = "2024-01-01", Value2 = "2024-01-31" });
+            result = PivotEngine.Build(pivot, read, 100, 26);
+            Check(result.Rows.Last().Any(v => v == "37"), "timeline date filter");
+
             Check(FormulaEngine.ShiftReferences("=SUM(Table1[Doanh thu])+A1", 1, 0, 50000, 26) ==
                 "=SUM(Table1[Doanh thu])+A2", "structured reference survives fill");
             Check(FormulaEngine.ShiftStructureReferences("=SUM(Table1[A1])+A2", true, 0, true, 50000, 26) ==
@@ -132,12 +154,24 @@ namespace DinkCel
                         ValueColumn = 1, Aggregate = "Sum" };
                     pivotSheet.Rows.Add(new PivotAxisField { Column = 0 });
                     pivotSheet.Values.Add(new PivotValueField { Column = 1, Aggregate = "Sum" });
+                    pivotSheet.CalculatedFields.Add(new PivotCalculatedField
+                    { Name = "Double", Formula = "={Doanh thu}*2" });
+                    pivotSheet.Values.Add(new PivotValueField { Column = 3, Aggregate = "Sum" });
                     pivotSheet.Filters.Add(new PivotFilterField { Column = 0, Value = "A" });
                     Call(reopened, "AddSheet");
                     ((List<SheetState>)Field(reopened, "sheets"))[1].Name = "Pivot1";
                     ((List<PivotDefinition>)Field(reopened, "pivots")).Add(pivotSheet);
                     Call(reopened, "RefreshPivot", pivotSheet);
                     Check(Convert.ToString(grid[1, 2].Value) == "10", "pivot UI refresh with filter");
+                    Check(Enumerable.Range(1, pivotSheet.LastOutputRows - 1).Any(r =>
+                        Convert.ToString(grid[2, r].Value) == "20"), "calculated pivot field");
+                    var chart = new ChartDefinition { Title = "Pivot chart", Kind = "Column",
+                        PivotSource = "Pivot1", Range = new Rectangle(0, 0, 2, 2),
+                        Placement = new Rectangle(5, 0, 8, 10) };
+                    ((List<ChartDefinition>)Field(reopened, "charts")).Add(chart);
+                    Call(reopened, "RefreshPivot", pivotSheet);
+                    Check(chart.Range.Width == pivotSheet.LastOutputColumns &&
+                        chart.Range.Height == pivotSheet.LastOutputRows, "pivot chart refresh range");
                     Check((bool)Call(reopened, "WriteWorkbook", native), "persist advanced pivot");
                     reopened.Close();
                 }
@@ -146,11 +180,14 @@ namespace DinkCel
                     final.Show(); Application.DoEvents();
                     var pivots = (List<PivotDefinition>)Field(final, "pivots");
                     Check(pivots.Count == 1 && pivots[0].SourceTable == "Table1" &&
-                        pivots[0].Rows.Count == 1 && pivots[0].Values.Count == 1 &&
+                        pivots[0].Rows.Count == 1 && pivots[0].Values.Count == 2 &&
+                        pivots[0].CalculatedFields.Count == 1 &&
                         pivots[0].Filters.Count == 1, "advanced pivot metadata");
                     Call(final, "SwitchSheet", 1);
                     var grid = (DataGridView)Field(final, "grid");
                     Check(Convert.ToString(grid[1, 2].Value) == "10", "persisted pivot result");
+                    Check(((List<ChartDefinition>)Field(final, "charts"))[0].PivotSource == "Pivot1",
+                        "pivot chart link persisted");
                     final.Close();
                 }
             }

@@ -22,6 +22,9 @@ namespace DinkCel
         private readonly Func<string, int, int, string> readOtherSheet;
         private readonly string currentSheet;
         private readonly Func<string, FormulaNamedRange> resolveName;
+        public Func<string, string, FormulaNamedRange> ResolveScopedRange;
+        public Func<string, string, string> ResolveNamedFormula;
+        private readonly HashSet<string> activeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Func<string, string, string, int, FormulaNamedRange> resolveTable;
         private readonly int rowCount;
         private readonly int columnCount;
@@ -447,13 +450,29 @@ namespace DinkCel
         private sealed class NameNode : Node
         {
             private readonly string name;
+            private readonly string sheet;
+            private readonly int row, column;
             public string Name { get { return name; } }
-            public NameNode(string name) { this.name = name; }
+            public NameNode(string name, string sheet, int row, int column)
+            { this.name = name; this.sheet = sheet; this.row = row; this.column = column; }
             public override Value Evaluate(FormulaEngine engine)
             {
                 Value local;
                 if (engine.TryLetValue(name, out local)) return local;
-                FormulaNamedRange range = engine.resolveName == null ? null : engine.resolveName(name);
+                string formula = engine.ResolveNamedFormula == null ? null :
+                    engine.ResolveNamedFormula(name, sheet);
+                if (!String.IsNullOrEmpty(formula))
+                {
+                    string key = sheet + "!" + name;
+                    if (!engine.activeNames.Add(key)) return Value.Error("#CYCLE!");
+                    try { return new Parser(engine, formula.TrimStart('='), sheet, row, column)
+                        .Parse().Evaluate(engine); }
+                    finally { engine.activeNames.Remove(key); }
+                }
+                FormulaNamedRange range = engine.ResolveScopedRange == null ? null :
+                    engine.ResolveScopedRange(name, sheet);
+                if (range == null && engine.ResolveScopedRange == null)
+                    range = engine.resolveName == null ? null : engine.resolveName(name);
                 if (range == null) return Value.Error("#NAME?");
                 if (range.FirstRow == range.LastRow && range.FirstColumn == range.LastColumn)
                     return engine.EvaluateCell(range.Sheet, range.FirstRow, range.FirstColumn);
@@ -612,6 +631,8 @@ namespace DinkCel
             {
                 Value dynamic = engine.EvaluateDynamic(name, arguments);
                 if (dynamic != null) return dynamic;
+                Value further = engine.EvaluateFurther(name, arguments);
+                if (further != null) return further;
                 Value advanced = engine.EvaluateAdvanced(name, arguments);
                 if (advanced != null) return advanced;
                 if (name == "IF")
@@ -964,7 +985,7 @@ namespace DinkCel
 
                 int row, column;
                 if (!TryAddress(word, out row, out column))
-                    return new NameNode(word);
+                    return new NameNode(word, explicitSheet ?? sheet, currentRow, currentColumn);
                 if (Take("#")) return new SpillNode(explicitSheet ?? sheet, row, column);
                 if (Take(":"))
                 {
@@ -1036,7 +1057,7 @@ namespace DinkCel
                 int start = position;
                 while (position < source.Length &&
                     (Char.IsLetterOrDigit(source[position]) ||
-                     source[position] == '$' || source[position] == '_'))
+                     source[position] == '$' || source[position] == '_' || source[position] == '.'))
                     position++;
                 return source.Substring(start, position - start);
             }

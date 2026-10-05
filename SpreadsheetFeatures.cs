@@ -23,6 +23,7 @@ namespace DinkCel
             AddMenuItem(sheet, "Bảo vệ/bỏ bảo vệ sheet", Keys.None, ToggleSheetProtection);
             AddMenuItem(sheet, "Bảo vệ/bỏ bảo vệ cấu trúc workbook", Keys.None, ToggleWorkbookProtection);
             AddMenuItem(sheet, "Đặt tên vùng...", Keys.None, DefineNamedRange);
+            AddMenuItem(sheet, "Đặt tên công thức...", Keys.None, DefineNamedFormula);
             AddMenuItem(sheet, "Đi tới vùng có tên...", Keys.None, GoToNamedRange);
             AddMenuItem(sheet, "Xóa vùng có tên...", Keys.None, DeleteNamedRange);
             menu.Items.Add(sheet);
@@ -39,6 +40,10 @@ namespace DinkCel
             AddMenuItem(data, "Thiết lập Pivot Table...", Keys.None, EditCurrentPivot);
             AddMenuItem(data, "Mở rộng / thu gọn nhóm Pivot", Keys.None, TogglePivotGroup);
             AddMenuItem(data, "Làm mới Pivot Table", Keys.None, RefreshAllPivots);
+            AddMenuItem(data, "Pivot Slicer...", Keys.None, PivotSlicer);
+            AddMenuItem(data, "Pivot Timeline...", Keys.None, PivotTimeline);
+            AddMenuItem(data, "Pivot calculated field...", Keys.None, PivotCalculatedField);
+            AddMenuItem(data, "Pivot Chart...", Keys.None, CreatePivotChart);
             menu.Items.Add(data);
             var insert = new ToolStripMenuItem("Chèn");
             AddMenuItem(insert, "Tạo Table từ vùng chọn...", Keys.None, CreateTable);
@@ -423,7 +428,12 @@ namespace DinkCel
             SaveActiveSheet();
             sheets[activeSheetIndex].Name = name;
             foreach (NamedRange named in namedRanges)
+            {
                 if (string.Equals(named.Sheet, oldName, StringComparison.OrdinalIgnoreCase)) named.Sheet = name;
+                if (string.Equals(named.ScopeSheet, oldName, StringComparison.OrdinalIgnoreCase)) named.ScopeSheet = name;
+                if (!String.IsNullOrEmpty(named.Formula))
+                    named.Formula = RenameSheetReferences(named.Formula, oldName, name);
+            }
             foreach (PivotDefinition pivot in pivots)
             {
                 if (string.Equals(pivot.SourceSheet, oldName, StringComparison.OrdinalIgnoreCase)) pivot.SourceSheet = name;
@@ -504,7 +514,10 @@ namespace DinkCel
             string deletedName = sheets[activeSheetIndex].Name;
             sheets.RemoveAt(activeSheetIndex);
             sheetHistories.RemoveAt(activeSheetIndex);
-            namedRanges.RemoveAll(n => string.Equals(n.Sheet, deletedName, StringComparison.OrdinalIgnoreCase));
+            namedRanges.RemoveAll(n =>
+                string.Equals(n.ScopeSheet, deletedName, StringComparison.OrdinalIgnoreCase) ||
+                String.IsNullOrEmpty(n.Formula) &&
+                string.Equals(n.Sheet, deletedName, StringComparison.OrdinalIgnoreCase));
             pivots.RemoveAll(p => string.Equals(p.SourceSheet, deletedName, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(p.TargetSheet, deletedName, StringComparison.OrdinalIgnoreCase));
             activeSheetIndex = Math.Min(activeSheetIndex, sheets.Count - 1);

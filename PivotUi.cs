@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
 namespace DinkCel
@@ -44,23 +45,25 @@ namespace DinkCel
             var valueBoxes = new List<ComboBox>(); var aggregates = new List<ComboBox>();
             var filterBoxes = new List<ComboBox>(); var filterValues = new List<TextBox>();
             string[] optional = new[] { "(Không)" }.Concat(headers).ToArray();
+            string[] valueOptions = optional.Concat(existing == null ?
+                Enumerable.Empty<string>() : existing.CalculatedFields.Select(f => f.Name)).ToArray();
             for (int i = 0; i < 3; i++)
             {
                 ComboBox field = DataChoice(optional);
                 if (i == 0) field.SelectedIndex = 1;
-                ComboBox group = DataChoice("None", "Day", "Month", "Year");
+                ComboBox group = DataChoice("None", "Day", "Week", "Month", "Quarter", "Year");
                 DataField(layout, "Rows " + (i + 1), field); DataField(layout, "Nhóm ngày", group);
                 rowBoxes.Add(field); rowGroups.Add(group);
             }
             for (int i = 0; i < 2; i++)
             {
-                ComboBox field = DataChoice(optional); ComboBox group = DataChoice("None", "Day", "Month", "Year");
+                ComboBox field = DataChoice(optional); ComboBox group = DataChoice("None", "Day", "Week", "Month", "Quarter", "Year");
                 DataField(layout, "Columns " + (i + 1), field); DataField(layout, "Nhóm ngày", group);
                 colBoxes.Add(field); colGroups.Add(group);
             }
             for (int i = 0; i < 3; i++)
             {
-                ComboBox field = DataChoice(optional);
+                ComboBox field = DataChoice(valueOptions);
                 if (i == 0) field.SelectedIndex = headers.Length;
                 ComboBox aggregate = DataChoice("Sum", "Count", "Average", "Min", "Max");
                 DataField(layout, "Values " + (i + 1), field); DataField(layout, "Tổng hợp", aggregate);
@@ -89,8 +92,9 @@ namespace DinkCel
                 { colBoxes[i].SelectedIndex = existing.Columns[i].Column - range.Left + 1; colGroups[i].Text = existing.Columns[i].DateGroup; }
                 for (int i = 0; i < Math.Min(3, values.Count); i++)
                 { valueBoxes[i].SelectedIndex = values[i].Column - range.Left + 1; aggregates[i].Text = values[i].Aggregate; }
-                for (int i = 0; i < Math.Min(2, existing.Filters.Count); i++)
-                { filterBoxes[i].SelectedIndex = existing.Filters[i].Column - range.Left + 1; filterValues[i].Text = existing.Filters[i].Value; }
+                var simpleFilters = existing.Filters.Where(f => f.Operator == "Equals").Take(2).ToList();
+                for (int i = 0; i < simpleFilters.Count; i++)
+                { filterBoxes[i].SelectedIndex = simpleFilters[i].Column - range.Left + 1; filterValues[i].Text = simpleFilters[i].Value; }
                 grand.Checked = existing.GrandTotal; subtotal.Checked = existing.Subtotal;
                 sort.SelectedIndex = existing.SortByValue ? existing.SortDescending ? 3 : 2 : existing.SortDescending ? 1 : 0;
             }
@@ -125,7 +129,7 @@ namespace DinkCel
                 pivot.Rows.Clear(); pivot.Rows.AddRange(rows);
                 pivot.Columns.Clear(); pivot.Columns.AddRange(columns);
                 pivot.Values.Clear(); pivot.Values.AddRange(values);
-                pivot.Filters.Clear();
+                pivot.Filters.RemoveAll(f => f.Operator == "Equals");
                 for (int i = 0; i < filterBoxes.Count; i++) if (filterBoxes[i].SelectedIndex > 0)
                     pivot.Filters.Add(new PivotFilterField { Column = range.Left + filterBoxes[i].SelectedIndex - 1,
                         Value = filterValues[i].Text });
@@ -162,6 +166,118 @@ namespace DinkCel
             RefreshPivotAdvanced(pivot);
         }
 
+        private PivotDefinition ChoosePivot()
+        {
+            PivotDefinition current = pivots.FirstOrDefault(p => p.TargetSheet == sheets[activeSheetIndex].Name);
+            if (current != null) return current;
+            string target = ChooseOption("Pivot Table", pivots.Select(p => p.TargetSheet).ToList());
+            return pivots.FirstOrDefault(p => p.TargetSheet == target);
+        }
+
+        private void PivotSlicer()
+        {
+            PivotDefinition pivot = ChoosePivot();
+            if (pivot == null) return;
+            SaveActiveSheet();
+            SheetState source = sheets.FirstOrDefault(s => s.Name == pivot.SourceSheet);
+            if (source == null) return;
+            string[] headers = Enumerable.Range(pivot.SourceRange.Left, pivot.SourceRange.Width)
+                .Select(c => StateRaw(source, pivot.SourceRange.Top, c)).ToArray();
+            string header = ChooseOption("Slicer field", headers);
+            if (header == null) return;
+            int column = pivot.SourceRange.Left + Array.IndexOf(headers, header);
+            var values = Enumerable.Range(pivot.SourceRange.Top + 1, pivot.SourceRange.Height - 1)
+                .Select(r => StateRaw(source, r, column)).Distinct(StringComparer.CurrentCultureIgnoreCase)
+                .OrderBy(s => s, StringComparer.CurrentCultureIgnoreCase).ToList();
+            values.Insert(0, "(All)");
+            string selected = ChooseOption("Slicer: " + header, values);
+            if (selected == null) return;
+            pivot.Filters.RemoveAll(f => f.Column == column && f.Operator == "Slicer");
+            if (selected != "(All)") pivot.Filters.Add(new PivotFilterField
+            { Column = column, Operator = "Slicer", Value = selected });
+            RefreshPivotAdvanced(pivot);
+        }
+
+        private void PivotTimeline()
+        {
+            PivotDefinition pivot = ChoosePivot();
+            if (pivot == null) return;
+            SaveActiveSheet();
+            SheetState source = sheets.FirstOrDefault(s => s.Name == pivot.SourceSheet);
+            if (source == null) return;
+            string[] headers = Enumerable.Range(pivot.SourceRange.Left, pivot.SourceRange.Width)
+                .Select(c => StateRaw(source, pivot.SourceRange.Top, c)).ToArray();
+            string header = ChooseOption("Timeline date field", headers);
+            if (header == null) return;
+            string startText = Prompt("From date (yyyy-MM-dd)", DateTime.Today.AddMonths(-1).ToString("yyyy-MM-dd"));
+            if (startText == null) return;
+            string endText = Prompt("To date (yyyy-MM-dd)", DateTime.Today.ToString("yyyy-MM-dd"));
+            if (endText == null) return;
+            int column = pivot.SourceRange.Left + Array.IndexOf(headers, header);
+            if (String.IsNullOrWhiteSpace(startText) && String.IsNullOrWhiteSpace(endText))
+            {
+                pivot.Filters.RemoveAll(f => f.Column == column && f.Operator == "BetweenDate");
+                RefreshPivotAdvanced(pivot); return;
+            }
+            DateTime start, end;
+            if (!DateTime.TryParse(startText, CultureInfo.InvariantCulture, DateTimeStyles.None, out start) ||
+                !DateTime.TryParse(endText, CultureInfo.InvariantCulture, DateTimeStyles.None, out end) || start > end)
+            { MessageBox.Show(this, "Invalid date range."); return; }
+            pivot.Filters.RemoveAll(f => f.Column == column && f.Operator == "BetweenDate");
+            pivot.Filters.Add(new PivotFilterField { Column = column, Operator = "BetweenDate",
+                Value = start.ToString("yyyy-MM-dd"), Value2 = end.ToString("yyyy-MM-dd") });
+            RefreshPivotAdvanced(pivot);
+        }
+
+        private void PivotCalculatedField()
+        {
+            PivotDefinition pivot = ChoosePivot();
+            if (pivot == null) return;
+            string name = Prompt("Calculated field name", "Calculated" + (pivot.CalculatedFields.Count + 1));
+            if (name == null) return;
+            name = name.Trim();
+            if (name.Length == 0 || pivot.CalculatedFields.Any(f =>
+                String.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase)))
+            { MessageBox.Show(this, "Invalid or duplicate field name."); return; }
+            string formula = Prompt("Formula: use {Column header}, e.g. ={Revenue}-{Cost}", "=");
+            if (formula == null) return;
+            if (!formula.StartsWith("=", StringComparison.Ordinal) || formula.Length < 2)
+            { MessageBox.Show(this, "Formula must start with =."); return; }
+            SaveActiveSheet();
+            SheetState source = sheets.FirstOrDefault(s => s.Name == pivot.SourceSheet);
+            if (source == null) return;
+            var headers = Enumerable.Range(pivot.SourceRange.Left, pivot.SourceRange.Width)
+                .Select(c => StateRaw(source, pivot.SourceRange.Top, c)).ToList();
+            if (headers.Any(h => String.Equals(h, name, StringComparison.OrdinalIgnoreCase)))
+            { MessageBox.Show(this, "The field name already exists in the source table."); return; }
+            if (Regex.Matches(formula, @"\{([^{}]+)\}").Cast<Match>().Any(m =>
+                !headers.Any(h => String.Equals(h, m.Groups[1].Value, StringComparison.OrdinalIgnoreCase))))
+            { MessageBox.Show(this, "Formula contains an unknown column header."); return; }
+            pivot.CalculatedFields.Add(new PivotCalculatedField { Name = name, Formula = formula });
+            pivot.Values.Add(new PivotValueField { Column = pivot.SourceRange.Right + pivot.CalculatedFields.Count - 1,
+                Aggregate = "Sum" });
+            RefreshPivotAdvanced(pivot);
+        }
+
+        private void CreatePivotChart()
+        {
+            PivotDefinition pivot = ChoosePivot();
+            if (pivot == null) return;
+            int index = sheets.FindIndex(s => s.Name == pivot.TargetSheet);
+            if (index < 0) return;
+            SwitchSheet(index);
+            string kind = ChooseOption("Pivot Chart", new[] { "Column", "Line", "Bar", "Pie" });
+            if (kind == null) return;
+            var chart = new ChartDefinition { Title = pivot.TargetSheet, Kind = kind,
+                PivotSource = pivot.TargetSheet,
+                Range = new Rectangle(0, 0, Math.Max(2, pivot.LastOutputColumns),
+                    Math.Max(2, pivot.LastOutputRows)),
+                Placement = new Rectangle(Math.Min(ColumnCount - 8,
+                    Math.Max(2, pivot.LastOutputColumns + 1)), 0, 8, 14) };
+            EnsureRowCapacity(Math.Min(MaxRowCount, chart.Placement.Bottom));
+            charts.Add(chart); RecordChange(); MarkDirty(); RefreshChartOverlays(); ShowChart(chart);
+        }
+
         private void RefreshPivotAdvanced(PivotDefinition pivot)
         {
             int sourceIndex = sheets.FindIndex(s => s.Name == pivot.SourceSheet);
@@ -189,6 +305,26 @@ namespace DinkCel
                 }, null, ResolveStructuredRange);
             Func<int, int, string> read = (r, c) =>
             {
+                if (c >= pivot.SourceRange.Right)
+                {
+                    int index = c - pivot.SourceRange.Right;
+                    if (index < 0 || index >= pivot.CalculatedFields.Count) return "";
+                    PivotCalculatedField field = pivot.CalculatedFields[index];
+                    if (r == pivot.SourceRange.Top) return field.Name;
+                    string expression = Regex.Replace(field.Formula, @"\{([^{}]+)\}", (Match match) =>
+                    {
+                        for (int col = pivot.SourceRange.Left; col < pivot.SourceRange.Right; col++)
+                            if (String.Equals(StateRaw(source, pivot.SourceRange.Top, col),
+                                match.Groups[1].Value, StringComparison.OrdinalIgnoreCase))
+                                return CellAddress(col, r);
+                        return "#NAME?";
+                    });
+                    string computed = engine.EvaluateExpression(expression);
+                    if (computed.StartsWith("#", StringComparison.Ordinal))
+                        throw new InvalidOperationException("Calculated field " + field.Name +
+                            " failed on row " + (r + 1) + ": " + computed);
+                    return computed;
+                }
                 string raw = StateRaw(source, r, c);
                 return raw.StartsWith("=", StringComparison.Ordinal) ? engine.Display(r, c) : raw;
             };
@@ -223,10 +359,13 @@ namespace DinkCel
                 }
                 pivot.LastOutputRows = result.Rows.Count;
                 pivot.LastOutputColumns = result.Rows[0].Length;
+                foreach (ChartDefinition chart in charts.Where(c => c.PivotSource == pivot.TargetSheet))
+                    chart.Range = new Rectangle(0, 0, Math.Max(2, pivot.LastOutputColumns),
+                        Math.Max(2, pivot.LastOutputRows));
                 pivotRowKeys[pivot.TargetSheet] = result.ExpandableRows;
             }
             finally { grid.ResumeLayout(); loading = false; }
-            Recalculate(); RecordChange(); MarkDirty(); SaveActiveSheet();
+            Recalculate(); RecordChange(); MarkDirty(); SaveActiveSheet(); RefreshChartOverlays();
             status.Text = "Đã làm mới " + pivot.TargetSheet + " (" + (result.Rows.Count - 1) + " hàng)";
         }
     }

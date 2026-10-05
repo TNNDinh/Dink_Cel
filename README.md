@@ -1,5 +1,16 @@
 # DinkCel
 
+## v1.3.0 — Advanced Excel
+
+- Pivot: lọc giá trị theo kiểu Slicer, lọc khoảng ngày bằng Timeline, tạo Pivot Chart gắn với kết quả Pivot, trường tính toán với cú pháp `{Tên cột}`, nhóm theo ngày/tuần/tháng/quý/năm. Pivot tiếp tục hỗ trợ làm mới, sắp xếp, tổng nhóm và mở rộng/thu gọn.
+- What-if: Goal Seek, Data Table hai biến và Scenario lưu trong `.dinkcel`.
+- Dữ liệu: Text to Columns, Remove Duplicates, Flash Fill theo các mẫu phổ biến, Advanced Filter theo vùng điều kiện.
+- Công thức: thêm `STDEV.S/P`, `VAR.S/P`, `MODE.SNGL`, `PERCENTILE.INC`, `QUARTILE.INC`, `CORREL`; `PMT`, `FV`, `PV`, `NPV`, `IRR`, `RATE`; `WORKDAY`, `NETWORKDAYS`, `EDATE`, `DAYS`, `DATEDIF`, `YEARFRAC`; `XMATCH`, `LOOKUP`, `CHOOSE`; `CONVERT`, `DEC2BIN`, `BIN2DEC`, `DEC2HEX`, `HEX2DEC`.
+- Tên vùng và tên công thức có phạm vi workbook hoặc sheet; đọc/ghi trong `.dinkcel` và `.xlsx`. Tên ở sheet ưu tiên hơn tên workbook cùng tên.
+- `.xlsx` chỉ giữ kết quả Pivot dưới dạng ô và biểu đồ thường; app cảnh báo trước khi xuất vì thiết lập Pivot, Slicer, Timeline, trường tính toán và liên kết Pivot Chart chỉ giữ trong `.dinkcel`.
+
+Giới hạn: Slicer/Timeline là hộp chọn lọc trong menu, chưa phải đối tượng kéo thả trên sheet. Flash Fill nhận một số mẫu văn bản thường gặp, chưa suy luận tùy ý. Data Table ghi giá trị kết quả tại thời điểm tạo, chưa tự cập nhật như Excel. Lưới vẫn giới hạn 50.000 hàng × 26 cột.
+
 ## v1.2.0 — Excel 365 / Dynamic Arrays
 
 - Thêm `FILTER`, `SORT`, `SORTBY`, `UNIQUE`, `SEQUENCE`, `TRANSPOSE`, `LET`, `CHOOSECOLS`, `CHOOSEROWS`, `TAKE`, `DROP`, `VSTACK` và `HSTACK`.
