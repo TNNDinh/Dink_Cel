@@ -9,6 +9,8 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using System.IO.Compression;
+using System.Linq;
 
 namespace DinkCel
 {
@@ -238,11 +240,62 @@ namespace DinkCel
                     form.Close();
                 }
                 TestAiClient();
+                TestDynamicArrayUi(directory);
                 Console.WriteLine("Open file: CSV and older .dinkcel passed.");
             }
             finally
             {
                 Directory.Delete(directory, true);
+            }
+        }
+
+        private static void TestDynamicArrayUi(string directory)
+        {
+            string native = Path.Combine(directory, "dynamic.dinkcel");
+            string xlsx = Path.Combine(directory, "dynamic.xlsx");
+            using (var form = new SpreadsheetForm(null))
+            {
+                form.Show(); Application.DoEvents();
+                var grid = (DataGridView)Field(form, "grid");
+                grid[4, 0].Value = "=SEQUENCE(2,2)";
+                Equal("1", grid[4, 0].FormattedValue);
+                Equal("4", grid[5, 1].FormattedValue);
+                grid[5, 1].Value = "blocked";
+                Equal("#SPILL!", grid[4, 0].FormattedValue);
+                grid[5, 1].Value = null;
+                Equal("4", grid[5, 1].FormattedValue);
+                Invoke(form, "SelectRectangle", new Rectangle(5, 1, 1, 1), 5, 1, false);
+                Invoke(form, "CopySelected");
+                Invoke(form, "SelectRectangle", new Rectangle(8, 0, 1, 1), 8, 0, false);
+                Invoke(form, "PasteSelected");
+                Equal("4", grid[8, 0].Value);
+                Equal(true, Invoke(form, "WriteWorkbook", native));
+                Equal(true, Invoke(form, "WriteXlsx", xlsx));
+                form.Close();
+            }
+            using (var archive = ZipFile.OpenRead(xlsx))
+            using (var stream = archive.GetEntry("xl/worksheets/sheet1.xml").Open())
+            {
+                var sheetXml = System.Xml.Linq.XDocument.Load(stream);
+                var formula = sheetXml.Descendants().First(x => x.Name.LocalName == "f");
+                Equal("_xlfn.SEQUENCE(2,2)", formula.Value);
+                Equal("E1:F2", (string)formula.Attribute("ref"));
+            }
+            using (var form = new SpreadsheetForm(native))
+            {
+                form.Show(); Application.DoEvents();
+                var grid = (DataGridView)Field(form, "grid");
+                Equal("=SEQUENCE(2,2)", grid[4, 0].Value);
+                Equal("4", grid[5, 1].FormattedValue);
+                form.Close();
+            }
+            using (var form = new SpreadsheetForm(xlsx))
+            {
+                form.Show(); Application.DoEvents();
+                var grid = (DataGridView)Field(form, "grid");
+                Equal("=SEQUENCE(2,2)", grid[4, 0].Value);
+                Equal("4", grid[5, 1].FormattedValue);
+                form.Close();
             }
         }
 

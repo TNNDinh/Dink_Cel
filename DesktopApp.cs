@@ -798,10 +798,15 @@ namespace DinkCel
         private void Recalculate(int changedRow, int changedColumn)
         {
             calculated.Clear();
+            bool dynamicArrays = formulaKeys.Any(key => key / ColumnCount < RowCount &&
+                FormulaEngine.HasDynamicArraySyntax(Convert.ToString(grid[key % ColumnCount, key / ColumnCount].Value)));
+            if (changedRow >= 0 && changedColumn >= 0 &&
+                (dynamicArrays || formulaEngine != null && formulaEngine.HasSpills || scriptEnabled))
+                formulaEngine = null;
             if (formulaEngine == null)
                 formulaEngine = new FormulaEngine(delegate(int row, int column)
             {
-                return Convert.ToString(grid[column, row].Value) ?? "";
+                return row < RowCount ? Convert.ToString(grid[column, row].Value) ?? "" : "";
             }, delegate(string name, int row, int column)
             {
                 foreach (SheetState sheet in sheets)
@@ -813,7 +818,7 @@ namespace DinkCel
                     }
                 return null;
             }, sheets.Count > activeSheetIndex ? sheets[activeSheetIndex].Name : "Sheet1",
-                RowCount, ColumnCount, delegate(string name)
+                MaxRowCount, ColumnCount, delegate(string name)
                 {
                     NamedRange named = namedRanges.FirstOrDefault(n =>
                         string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase));
@@ -828,9 +833,15 @@ namespace DinkCel
                 }, null, ResolveStructuredRange);
             if (formulaEngine != null && !String.IsNullOrWhiteSpace(scriptCode))
                 ConfigureCustomFunctions(formulaEngine);
-            else if (changedRow >= 0 && changedColumn >= 0)
-                formulaEngine.Invalidate(sheets[activeSheetIndex].Name,
-                    changedRow, changedColumn);
+            if (changedRow >= 0 && changedColumn >= 0 && !dynamicArrays)
+                formulaEngine.Invalidate(sheets[activeSheetIndex].Name, changedRow, changedColumn);
+            if (dynamicArrays)
+                formulaEngine.PrepareSpills(formulaKeys, delegate(int row, int column)
+                {
+                    if (row >= RowCount) return false;
+                    return !String.IsNullOrEmpty(Convert.ToString(grid[column, row].Value)) ||
+                        merges.Any(m => m.Contains(column, row));
+                });
             foreach (int key in formulaKeys.ToArray())
             {
                 int row = key / ColumnCount, column = key % ColumnCount;
@@ -838,6 +849,13 @@ namespace DinkCel
                 string raw = Convert.ToString(grid[column, row].Value) ?? "";
                 if (raw.StartsWith("=", StringComparison.Ordinal))
                     calculated[key] = formulaEngine.Display(row, column);
+            }
+            if (dynamicArrays)
+            {
+                Dictionary<int, string> spill = formulaEngine.SpillDisplays();
+                if (spill.Count > 0)
+                    EnsureRowCapacity(Math.Min(MaxRowCount, spill.Keys.Max() / ColumnCount + 1));
+                foreach (var item in spill) calculated[item.Key] = item.Value;
             }
             grid.Invalidate();
         }

@@ -1,5 +1,14 @@
 # DinkCel
 
+## v1.2.0 — Excel 365 / Dynamic Arrays
+
+- Thêm `FILTER`, `SORT`, `SORTBY`, `UNIQUE`, `SEQUENCE`, `TRANSPOSE`, `LET`, `CHOOSECOLS`, `CHOOSEROWS`, `TAKE`, `DROP`, `VSTACK` và `HSTACK`.
+- Công thức trả về mảng tự trải sang ô trống. Ô cản vùng trải hiển thị `#SPILL!`; vùng không có kết quả hiển thị `#CALC!`.
+- Hỗ trợ tham chiếu vùng trải như `=SUM(E1#)` và toán tử giao ngầm `@`. Có thể copy giá trị từ ô đã trải và Undo/Redo các thay đổi gây tràn.
+- Khi đọc/ghi `.xlsx`, DinkCel nhận và ghi tên hàm Excel 365 dạng `_xlfn`, ghi vùng công thức mảng và yêu cầu Excel tính lại khi mở. `.dinkcel` giữ công thức gốc. Dữ liệu cache và metadata mảng động từ workbook Excel phức tạp vẫn cần đối chiếu trước khi lưu đè.
+
+Ví dụ: nhập `=FILTER(A2:D100,B2:B100="Hanoi")` vào ô trống; kết quả tự điền các ô bên cạnh và phía dưới.
+
 ## v1.1.0 — DinkCel Script và AI
 
 - Mở **Script > Script Editor** (`Ctrl+Shift+J`) để viết JavaScript, lưu mã cùng workbook `.dinkcel`, chọn hàm và chạy. Ví dụ editor tạo sẵn thao tác đọc/ghi ô và hàm `DOUBLE`.

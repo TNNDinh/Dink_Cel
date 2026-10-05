@@ -6,6 +6,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using System.Xml.Linq;
 
@@ -13,6 +14,54 @@ namespace DinkCel
 {
     internal static class XlsxFile
     {
+        private static readonly Dictionary<string, string> FutureFunctions =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "FILTER", "_xlfn._xlws.FILTER" }, { "SORT", "_xlfn._xlws.SORT" },
+                { "SORTBY", "_xlfn.SORTBY" }, { "UNIQUE", "_xlfn.UNIQUE" },
+                { "SEQUENCE", "_xlfn.SEQUENCE" }, { "LET", "_xlfn.LET" },
+                { "CHOOSECOLS", "_xlfn.CHOOSECOLS" }, { "CHOOSEROWS", "_xlfn.CHOOSEROWS" },
+                { "TAKE", "_xlfn.TAKE" }, { "DROP", "_xlfn.DROP" },
+                { "VSTACK", "_xlfn.VSTACK" }, { "HSTACK", "_xlfn.HSTACK" }
+            };
+
+        private static string ImportFormula(string formula)
+        {
+            return Regex.Replace(formula ?? "",
+                @"_xlfn\.(?:_xlws\.)?([A-Za-z][A-Za-z0-9_]*)\(",
+                match => FutureFunctions.ContainsKey(match.Groups[1].Value) ?
+                    match.Groups[1].Value + "(" : match.Value, RegexOptions.IgnoreCase);
+        }
+
+        private static string ExportFormula(string formula)
+        {
+            var result = new StringBuilder();
+            bool quoted = false;
+            for (int i = 0; i < formula.Length;)
+            {
+                char current = formula[i];
+                if (current == '"')
+                {
+                    result.Append(current); i++;
+                    if (quoted && i < formula.Length && formula[i] == '"')
+                    { result.Append(formula[i++]); continue; }
+                    quoted = !quoted;
+                    continue;
+                }
+                if (!quoted && (Char.IsLetter(current) || current == '_'))
+                {
+                    int start = i;
+                    while (i < formula.Length && (Char.IsLetterOrDigit(formula[i]) ||
+                        formula[i] == '_')) i++;
+                    string word = formula.Substring(start, i - start);
+                    string future;
+                    result.Append(i < formula.Length && formula[i] == '(' &&
+                        FutureFunctions.TryGetValue(word, out future) ? future : word);
+                }
+                else { result.Append(current); i++; }
+            }
+            return result.ToString();
+        }
         private static readonly XNamespace S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
         private static readonly XNamespace R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
         private static readonly XNamespace P = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -166,7 +215,12 @@ namespace DinkCel
                     if (sheet.Descendants(S + "legacyDrawing").Any()) losses.Add("Legacy drawings or notes");
                     if (sheet.Descendants(S + "extLst").Any()) losses.Add("Excel extensions");
                     if (sheet.Descendants(S + "f").Any(f => (string)f.Attribute("t") == "shared" ||
-                        (string)f.Attribute("t") == "array")) losses.Add("Shared or array formulas");
+                        (string)f.Attribute("t") == "array" &&
+                        !FormulaEngine.HasDynamicArraySyntax("=" + ImportFormula(f.Value))))
+                        losses.Add("Shared or unsupported array formulas");
+                    if (sheet.Descendants(S + "f").Any(f => (string)f.Attribute("t") == "array" &&
+                        FormulaEngine.HasDynamicArraySyntax("=" + ImportFormula(f.Value))))
+                        losses.Add("Dynamic array cached values and metadata may change");
                     if (sheet.Root.Elements().Any(e => !KnownSheetElement(e.Name.LocalName)))
                         losses.Add("Other worksheet features: " + entry.FullName);
                 }
@@ -296,6 +350,13 @@ namespace DinkCel
                             if (col.Attribute("style") != null) columnStyles[c - 1] = (int)col.Attribute("style");
                         }
                     }
+                    var dynamicSpans = document.Descendants(S + "c").Select(cell =>
+                    {
+                        XElement formula = cell.Element(S + "f");
+                        return formula != null && (string)formula.Attribute("t") == "array" &&
+                            FormulaEngine.HasDynamicArraySyntax("=" + ImportFormula(formula.Value)) ?
+                            ParseArea((string)formula.Attribute("ref") ?? "", rows, columns) : Rectangle.Empty;
+                    }).Where(area => !area.IsEmpty).ToList();
                     foreach (var row in document.Descendants(S + "sheetData").Elements(S + "row"))
                     {
                         int r = ((int?)row.Attribute("r") ?? 0) - 1;
@@ -315,7 +376,9 @@ namespace DinkCel
                             else if (type == "inlineStr") value = string.Concat(cell.Descendants(S + "t").Select(x => x.Value));
                             else if (type == "b") value = value == "1" ? "TRUE" : "FALSE";
                             var formula = cell.Element(S + "f");
-                            if (formula != null && !string.IsNullOrEmpty(formula.Value)) value = "=" + formula.Value;
+                            if (formula != null && !string.IsNullOrEmpty(formula.Value)) value = "=" + ImportFormula(formula.Value);
+                            else if (formula == null && dynamicSpans.Any(area => area.Contains(col, line)))
+                                value = "";
                             var snapshot = new CellSnapshot { Text = value };
                             int inheritedStyle;
                             if (!columnStyles.TryGetValue(col, out inheritedStyle)) inheritedStyle = 0;
@@ -800,6 +863,8 @@ namespace DinkCel
                         }
                         workbookElement.Add(definitions);
                     }
+                    workbookElement.Add(new XElement(S + "calcPr", new XAttribute("calcMode", "auto"),
+                        new XAttribute("fullCalcOnLoad", 1)));
                     WriteXml(zip, "xl/workbook.xml", new XDocument(workbookElement));
                     WriteXml(zip, "xl/_rels/workbook.xml.rels", new XDocument(relationships));
                     WriteXml(zip, "xl/styles.xml", styleCatalog.Document());
@@ -868,6 +933,24 @@ namespace DinkCel
             string vmlRelation)
         {
             var root = new XElement(S + "worksheet", new XAttribute(XNamespace.Xmlns + "r", R));
+            var dynamicKeys = sheet.Cells.Where(x => FormulaEngine.HasDynamicArraySyntax(x.Value.Text))
+                .Select(x => x.Key).ToArray();
+            var spillDimensions = new Dictionary<int, int[]>();
+            if (dynamicKeys.Length > 0)
+            {
+                var engine = new FormulaEngine((row, column) =>
+                {
+                    CellSnapshot cell;
+                    return sheet.Cells.TryGetValue(row * columns + column, out cell) ? cell.Text : "";
+                }, rows, columns);
+                engine.PrepareSpills(dynamicKeys, (row, column) =>
+                {
+                    CellSnapshot cell;
+                    return sheet.Cells.TryGetValue(row * columns + column, out cell) &&
+                        !String.IsNullOrEmpty(cell.Text) || sheet.Merges.Any(m => m.Contains(column, row));
+                });
+                spillDimensions = engine.SpillDimensions();
+            }
             if (!sheet.TabColor.IsEmpty || sheet.Print.FitToOnePage)
             {
                 var properties = new XElement(S + "sheetPr");
@@ -927,7 +1010,20 @@ namespace DinkCel
                     var element = new XElement(S + "c", new XAttribute("r", address));
                     int styleIndex = styles.Index(cell);
                     if (styleIndex > 0) element.SetAttributeValue("s", styleIndex);
-                    if (cell.Text.StartsWith("=", StringComparison.Ordinal)) element.Add(new XElement(S + "f", cell.Text.Substring(1)));
+                    if (cell.Text.StartsWith("=", StringComparison.Ordinal))
+                    {
+                        var formula = new XElement(S + "f", ExportFormula(cell.Text.Substring(1)));
+                        int[] size;
+                        if (spillDimensions.TryGetValue(pair.Key, out size))
+                        {
+                            formula.SetAttributeValue("t", "array");
+                            formula.SetAttributeValue("ref", address + ":" +
+                                ColumnName(pair.Key % columns + size[1] - 1) +
+                                (r + size[0]).ToString(CultureInfo.InvariantCulture));
+                            formula.SetAttributeValue("aca", 1);
+                        }
+                        element.Add(formula);
+                    }
                     else
                     {
                         double number;

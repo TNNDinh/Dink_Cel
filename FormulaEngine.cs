@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -34,6 +35,10 @@ namespace DinkCel
         private readonly Stack<string> evaluationStack = new Stack<string>();
         private readonly HashSet<string> volatileCells = new HashSet<string>();
         private readonly Func<DateTime> nowProvider;
+        private readonly Dictionary<int, Value> spilledCells = new Dictionary<int, Value>();
+        private readonly Dictionary<int, Value> spillAnchors = new Dictionary<int, Value>();
+        private readonly Dictionary<int, string> spillProblems = new Dictionary<int, string>();
+        private Func<int, int, bool> spillBlocked;
         public Func<string, bool> HasCustomFunction;
         public Func<string, object[], object> CustomFunction;
 
@@ -87,6 +92,7 @@ namespace DinkCel
         {
             cache.Clear(); active.Clear(); dependencies.Clear(); dependents.Clear();
             calculationChain.Clear(); evaluationStack.Clear(); volatileCells.Clear();
+            spilledCells.Clear(); spillAnchors.Clear(); spillProblems.Clear();
         }
 
         public void Invalidate(string sheet, int row, int column)
@@ -132,7 +138,12 @@ namespace DinkCel
 
         public string Display(int row, int column)
         {
+            int index = row * columnCount + column;
+            string problem;
+            if (spillProblems.TryGetValue(index, out problem)) return problem;
             Value result = EvaluateCell(row, column);
+            if (result.Kind == ValueKind.Range)
+                result = result.Items.Count > 0 ? result.Items[0] : Value.Error("#CALC!");
             if (result.Kind == ValueKind.Number)
             {
                 if (Double.IsNaN(result.Number) || Double.IsInfinity(result.Number))
@@ -141,16 +152,74 @@ namespace DinkCel
             }
             if (result.Kind == ValueKind.Blank)
                 return "0";
-            if (result.Kind == ValueKind.Range)
-                return "#VALUE!";
             return result.Text;
+        }
+
+        public Dictionary<int, string> SpillDisplays()
+        {
+            var result = new Dictionary<int, string>();
+            foreach (var item in spilledCells)
+            {
+                Value value = item.Value;
+                result[item.Key] = value.Kind == ValueKind.Number ?
+                    value.Number.ToString("0.##########", CultureInfo.InvariantCulture) :
+                    value.Kind == ValueKind.Blank ? "" : value.Text;
+            }
+            return result;
+        }
+
+        public bool HasSpills { get { return spilledCells.Count > 0 || spillAnchors.Count > 0 || spillProblems.Count > 0; } }
+
+        public Dictionary<int, int[]> SpillDimensions()
+        {
+            return spillAnchors.ToDictionary(x => x.Key,
+                x => new[] { x.Value.Rows, x.Value.Columns });
+        }
+
+        public void PrepareSpills(IEnumerable<int> formulaCells, Func<int, int, bool> blocked)
+        {
+            spilledCells.Clear(); spillAnchors.Clear(); spillProblems.Clear();
+            spillBlocked = blocked;
+            foreach (int index in formulaCells)
+            {
+                int row = index / columnCount, column = index % columnCount;
+                if (row < 0 || row >= rowCount) continue;
+                Value value = EvaluateCell(row, column);
+                if (value.Kind == ValueKind.Range && (value.Rows > 1 || value.Columns > 1))
+                    RegisterSpill(row, column, value);
+            }
+            cache.Clear(); dependencies.Clear(); dependents.Clear();
+            calculationChain.Clear(); evaluationStack.Clear(); active.Clear();
+        }
+
+        private void RegisterSpill(int row, int column, Value value)
+        {
+            int anchor = row * columnCount + column;
+            if (spillAnchors.ContainsKey(anchor) || spillProblems.ContainsKey(anchor)) return;
+            if (value.Rows < 1 || value.Columns < 1 || row + value.Rows > rowCount ||
+                column + value.Columns > columnCount)
+            { spillProblems[anchor] = "#SPILL!"; return; }
+            for (int r = 0; r < value.Rows; r++)
+                for (int c = 0; c < value.Columns; c++)
+                {
+                    if (r == 0 && c == 0) continue;
+                    int key = (row + r) * columnCount + column + c;
+                    if (spilledCells.ContainsKey(key) || spillBlocked != null && spillBlocked(row + r, column + c))
+                    { spillProblems[anchor] = "#SPILL!"; return; }
+                }
+            spillAnchors[anchor] = value;
+            for (int r = 0; r < value.Rows; r++)
+                for (int c = 0; c < value.Columns; c++)
+                    if (r != 0 || c != 0)
+                        spilledCells[(row + r) * columnCount + column + c] =
+                            value.Items[r * value.Columns + c];
         }
 
         public string EvaluateExpression(string expression)
         {
             try
             {
-                Value result = new Parser(this, (expression ?? "").TrimStart('='), currentSheet, -1).Parse().Evaluate(this);
+                Value result = new Parser(this, (expression ?? "").TrimStart('='), currentSheet, -1, -1).Parse().Evaluate(this);
                 if (result.Kind == ValueKind.Number) return result.Number.ToString("0.##########", CultureInfo.InvariantCulture);
                 if (result.Kind == ValueKind.Blank) return "0";
                 if (result.Kind == ValueKind.Range) return "#VALUE!";
@@ -169,6 +238,14 @@ namespace DinkCel
             if (row < 0 || row >= rowCount || column < 0 || column >= columnCount)
                 return Value.Error("#REF!");
             string key = CellKey(sheet, row, column);
+            if (string.Equals(sheet, currentSheet, StringComparison.OrdinalIgnoreCase))
+            {
+                int index = row * columnCount + column;
+                Value spilled;
+                if (spilledCells.TryGetValue(index, out spilled)) return spilled;
+                string problem;
+                if (spillProblems.TryGetValue(index, out problem)) return Value.Error(problem);
+            }
             if (evaluationStack.Count > 0)
             {
                 string parent = evaluationStack.Peek();
@@ -199,7 +276,7 @@ namespace DinkCel
                 else if (raw.StartsWith("=", StringComparison.Ordinal))
                 {
                     formula = true;
-                    result = new Parser(this, raw.Substring(1), sheet, row).Parse().Evaluate(this);
+                    result = new Parser(this, raw.Substring(1), sheet, row, column).Parse().Evaluate(this);
                 }
                 else if (raw.Length == 0)
                     result = Value.Blank();
@@ -233,7 +310,7 @@ namespace DinkCel
         {
             return text == "#N/A" || text == "#VALUE!" || text == "#REF!" ||
                 text == "#DIV/0!" || text == "#NAME?" || text == "#NUM!" ||
-                text == "#CYCLE!";
+                text == "#CYCLE!" || text == "#SPILL!" || text == "#CALC!";
         }
 
         private static bool TryParseNumber(string text, out double number)
@@ -267,6 +344,8 @@ namespace DinkCel
             public List<Value> Items;
             public int Rows;
             public int Columns;
+            public int FirstRow = -1;
+            public int FirstColumn = -1;
 
             public static Value Blank() { return new Value { Kind = ValueKind.Blank }; }
             public static Value Numeric(double number)
@@ -319,12 +398,61 @@ namespace DinkCel
             }
         }
 
+        private sealed class SpillNode : Node
+        {
+            private readonly string sheet;
+            private readonly int row, column;
+            public SpillNode(string sheet, int row, int column)
+            { this.sheet = sheet; this.row = row; this.column = column; }
+            public override Value Evaluate(FormulaEngine engine)
+            {
+                if (!String.Equals(sheet, engine.currentSheet, StringComparison.OrdinalIgnoreCase))
+                    return Value.Error("#REF!");
+                int index = row * engine.columnCount + column;
+                string problem;
+                if (engine.spillProblems.TryGetValue(index, out problem)) return Value.Error(problem);
+                Value result;
+                if (!engine.spillAnchors.TryGetValue(index, out result))
+                {
+                    result = engine.EvaluateCell(sheet, row, column);
+                    if (result.Kind != ValueKind.Range || result.Rows * result.Columns <= 1)
+                        return Value.Error("#REF!");
+                    engine.RegisterSpill(row, column, result);
+                }
+                return engine.spillProblems.TryGetValue(index, out problem) ?
+                    Value.Error(problem) : result;
+            }
+        }
+
+        private sealed class ImplicitNode : Node
+        {
+            private readonly Node child;
+            private readonly int row, column;
+            public ImplicitNode(Node child, int row, int column)
+            { this.child = child; this.row = row; this.column = column; }
+            public override Value Evaluate(FormulaEngine engine)
+            {
+                Value value = child.Evaluate(engine);
+                if (value.Kind != ValueKind.Range) return value;
+                int r = value.FirstRow < 0 || row < 0 ? 0 : row - value.FirstRow;
+                int c = value.FirstColumn < 0 || column < 0 ? 0 : column - value.FirstColumn;
+                if (value.Rows == 1) r = 0;
+                if (value.Columns == 1) c = 0;
+                if (r < 0 || r >= value.Rows || c < 0 || c >= value.Columns)
+                    return Value.Error("#VALUE!");
+                return value.Items[r * value.Columns + c];
+            }
+        }
+
         private sealed class NameNode : Node
         {
             private readonly string name;
+            public string Name { get { return name; } }
             public NameNode(string name) { this.name = name; }
             public override Value Evaluate(FormulaEngine engine)
             {
+                Value local;
+                if (engine.TryLetValue(name, out local)) return local;
                 FormulaNamedRange range = engine.resolveName == null ? null : engine.resolveName(name);
                 if (range == null) return Value.Error("#NAME?");
                 if (range.FirstRow == range.LastRow && range.FirstColumn == range.LastColumn)
@@ -363,8 +491,11 @@ namespace DinkCel
                         column <= Math.Max(firstColumn, lastColumn); column++)
                         items.Add(engine.EvaluateCell(sheet, row, column));
                 }
-                return Value.Range(items, Math.Abs(lastRow - firstRow) + 1,
+                Value result = Value.Range(items, Math.Abs(lastRow - firstRow) + 1,
                     Math.Abs(lastColumn - firstColumn) + 1);
+                result.FirstRow = Math.Min(firstRow, lastRow);
+                result.FirstColumn = Math.Min(firstColumn, lastColumn);
+                return result;
             }
         }
 
@@ -406,7 +537,26 @@ namespace DinkCel
                 if (b.Kind == ValueKind.Error)
                     return b;
                 if (a.Kind == ValueKind.Range || b.Kind == ValueKind.Range)
-                    return Value.Error("#VALUE!");
+                {
+                    int rows = a.Kind == ValueKind.Range ? a.Rows : b.Rows;
+                    int columns = a.Kind == ValueKind.Range ? a.Columns : b.Columns;
+                    if (a.Kind == ValueKind.Range && (a.Rows != rows || a.Columns != columns) ||
+                        b.Kind == ValueKind.Range && (b.Rows != rows || b.Columns != columns))
+                        return Value.Error("#VALUE!");
+                    var items = new List<Value>(rows * columns);
+                    for (int i = 0; i < rows * columns; i++)
+                    {
+                        Value av = a.Kind == ValueKind.Range ? a.Items[i] : a;
+                        Value bv = b.Kind == ValueKind.Range ? b.Items[i] : b;
+                        items.Add(new BinaryNode(operation, new LiteralNode(av),
+                            new LiteralNode(bv)).Evaluate(engine));
+                    }
+                    Value result = Value.Range(items, rows, columns);
+                    Value source = a.Kind == ValueKind.Range ? a : b;
+                    result.FirstRow = source.FirstRow;
+                    result.FirstColumn = source.FirstColumn;
+                    return result;
+                }
 
                 if (operation == "=" || operation == "<>" || operation == "<" ||
                     operation == "<=" || operation == ">" || operation == ">=")
@@ -460,6 +610,8 @@ namespace DinkCel
             }
             public override Value Evaluate(FormulaEngine engine)
             {
+                Value dynamic = engine.EvaluateDynamic(name, arguments);
+                if (dynamic != null) return dynamic;
                 Value advanced = engine.EvaluateAdvanced(name, arguments);
                 if (advanced != null) return advanced;
                 if (name == "IF")
@@ -688,14 +840,16 @@ namespace DinkCel
             private readonly string source;
             private readonly string sheet;
             private readonly int currentRow;
+            private readonly int currentColumn;
             private int position;
 
-            public Parser(FormulaEngine engine, string source, string sheet, int currentRow)
+            public Parser(FormulaEngine engine, string source, string sheet, int currentRow, int currentColumn)
             {
                 this.engine = engine;
                 this.source = source;
                 this.sheet = sheet;
                 this.currentRow = currentRow;
+                this.currentColumn = currentColumn;
             }
 
             public Node Parse()
@@ -753,6 +907,7 @@ namespace DinkCel
             {
                 if (Take("+")) return new UnaryNode('+', Unary());
                 if (Take("-")) return new UnaryNode('-', Unary());
+                if (Take("@")) return new ImplicitNode(Unary(), currentRow, currentColumn);
                 return Primary();
             }
 
@@ -810,6 +965,7 @@ namespace DinkCel
                 int row, column;
                 if (!TryAddress(word, out row, out column))
                     return new NameNode(word);
+                if (Take("#")) return new SpillNode(explicitSheet ?? sheet, row, column);
                 if (Take(":"))
                 {
                     SkipSpaces();

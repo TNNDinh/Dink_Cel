@@ -379,6 +379,8 @@ namespace DinkCel
             copiedCells = new CellState[range.Height, range.Width];
             copiedDisplays = new string[range.Height, range.Width];
             copiedMask = new bool[range.Height, range.Width];
+            Dictionary<int, string> spillDisplays = formulaEngine != null && formulaEngine.HasSpills ?
+                formulaEngine.SpillDisplays() : null;
             var text = new StringBuilder();
             for (int row = 0; row < range.Height; row++)
             {
@@ -392,6 +394,9 @@ namespace DinkCel
                     if (!selected) continue;
                     copiedCells[row, column] = CaptureCell(range.Left + column, range.Top + row);
                     copiedDisplays[row, column] = Convert.ToString(cell.FormattedValue) ?? "";
+                    if (cell.Value == null && spillDisplays != null &&
+                        spillDisplays.ContainsKey((range.Top + row) * ColumnCount + range.Left + column))
+                        copiedCells[row, column].Value = copiedDisplays[row, column];
                     text.Append(ClipboardField(copiedDisplays[row, column]));
                 }
             }
