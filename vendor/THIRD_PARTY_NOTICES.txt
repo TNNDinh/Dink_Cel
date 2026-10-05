@@ -11,3 +11,15 @@ License and linking exception: vendor/SharpZipLib-COPYING.txt
 PDFsharp 1.50.5147 (MIT License)
 Source: https://www.nuget.org/packages/PDFsharp/1.50.5147
 License: vendor/PDFsharp-LICENSE.txt
+
+Jint 4.16.4 (BSD-2-Clause)
+Source: https://www.nuget.org/packages/Jint/4.16.4
+License: vendor/Jint-LICENSE.txt
+
+Acornima 1.7.0 (BSD-3-Clause)
+Source: https://www.nuget.org/packages/Acornima/1.7.0
+License: vendor/Acornima-LICENSE.txt
+
+System.Memory 4.5.5, System.Runtime.CompilerServices.Unsafe 6.0.0, System.Buffers 4.5.1, System.Numerics.Vectors 4.5.0 (MIT)
+Source: https://www.nuget.org/packages/System.Memory/4.5.5 and corresponding NuGet packages
+License: vendor/Microsoft-LICENSE.txt

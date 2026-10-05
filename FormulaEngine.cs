@@ -34,6 +34,8 @@ namespace DinkCel
         private readonly Stack<string> evaluationStack = new Stack<string>();
         private readonly HashSet<string> volatileCells = new HashSet<string>();
         private readonly Func<DateTime> nowProvider;
+        public Func<string, bool> HasCustomFunction;
+        public Func<string, object[], object> CustomFunction;
 
         public FormulaEngine(Func<int, int, string> readCell, int rowCount, int columnCount)
             : this(readCell, null, "", rowCount, columnCount) { }
@@ -567,7 +569,19 @@ namespace DinkCel
                 if (name != "SUM" && name != "AVERAGE" &&
                     name != "MIN" && name != "MAX" && name != "COUNT" &&
                     name != "COUNTA" && name != "MEDIAN")
-                    return Value.Error("#NAME?");
+                {
+                    if (engine.HasCustomFunction == null || engine.CustomFunction == null ||
+                        !engine.HasCustomFunction(name)) return Value.Error("#NAME?");
+                    var inputs = new object[arguments.Count];
+                    for (int i = 0; i < arguments.Count; i++)
+                    {
+                        Value input = arguments[i].Evaluate(engine);
+                        if (input.Kind == ValueKind.Error) return input;
+                        inputs[i] = CustomArgument(input);
+                    }
+                    try { return CustomResult(engine.CustomFunction(name, inputs)); }
+                    catch (Exception) { return Value.Error("#VALUE!"); }
+                }
 
                 var values = new List<Value>();
                 foreach (Node argument in arguments)
@@ -615,6 +629,38 @@ namespace DinkCel
                 if (name == "MIN")
                     return Value.Numeric(count == 0 ? 0 : minimum);
                 return Value.Numeric(count == 0 ? 0 : maximum);
+            }
+
+            private static object CustomArgument(Value value)
+            {
+                if (value.Kind == ValueKind.Blank) return null;
+                if (value.Kind == ValueKind.Number) return value.Number;
+                if (value.Kind == ValueKind.Range)
+                {
+                    var rows = new object[value.Rows][];
+                    for (int row = 0; row < value.Rows; row++)
+                    {
+                        rows[row] = new object[value.Columns];
+                        for (int column = 0; column < value.Columns; column++)
+                            rows[row][column] = CustomArgument(value.Items[row * value.Columns + column]);
+                    }
+                    return rows;
+                }
+                return value.Text;
+            }
+
+            private static Value CustomResult(object value)
+            {
+                if (value == null) return Value.Blank();
+                if (value is bool) return Value.Numeric((bool)value ? 1 : 0);
+                if (value is string)
+                {
+                    string text = (string)value;
+                    return text.StartsWith("#", StringComparison.Ordinal) ? Value.Error(text) : Value.String(text);
+                }
+                if (value is Array) return Value.Error("#VALUE!");
+                try { return Value.Numeric(Convert.ToDouble(value, CultureInfo.InvariantCulture)); }
+                catch (Exception) { return Value.String(Convert.ToString(value, CultureInfo.InvariantCulture)); }
             }
 
             private static bool MatchesCriterion(Value candidate, Value criterion)

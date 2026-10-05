@@ -1,5 +1,9 @@
 # DinkCel Script — thiết kế cho ứng dụng desktop
 
+> **Trạng thái v1.1.0:** Editor một tệp, hàm tùy chỉnh, API đọc/ghi vùng và kết nối AI kiểu Chat Completions đã có. Các mục bên dưới về nhiều tệp, trigger, quyền file/mạng tùy biến, cache bền vững, quota chi phí và chuyển nền tảng build là định hướng tiếp theo, chưa có trong v1.1.0. Runtime hiện dùng Jint nhúng trong một EXE .NET Framework 4.6.2+.
+
+Với hàm AI trong ô ở v1.1, dùng hàm đồng bộ và gọi `AI.generate(prompt)`. Ô tạm hiển thị `#BUSY!` trong khi request chạy nền; không khai báo `async` hoặc `await` cho custom function. Mỗi request hiển thị prompt để người dùng duyệt.
+
 ## Mục tiêu
 
 Thêm trình viết JavaScript trong DinkCel.exe để tự động hóa workbook và tạo hàm riêng dùng trong ô. Script chạy cục bộ trên máy; không cần trình duyệt hay máy chủ. Lệnh gọi model AI là tùy chọn và chỉ thực hiện khi người dùng cấu hình endpoint, cấp quyền mạng và chủ động chạy hoặc dùng hàm AI.

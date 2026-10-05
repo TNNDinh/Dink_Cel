@@ -4,6 +4,11 @@ using System.Drawing;
 using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 
 namespace DinkCel
 {
@@ -193,12 +198,102 @@ namespace DinkCel
                     Equal(native, Field(form, "currentPath"));
                     form.Close();
                 }
+                string scripted = Path.Combine(directory, "scripted.dinkcel");
+                using (var form = new SpreadsheetForm(null))
+                {
+                    form.Show(); Application.DoEvents();
+                    SetField(form, "scriptCode", "/** @customfunction */ function DOUBLE(x) { return x * 2; }");
+                    SetField(form, "scriptEnabled", true);
+                    var grid = (DataGridView)Field(form, "grid");
+                    grid[0, 0].Value = "7";
+                    grid[1, 0].Value = "=DOUBLE(A1)";
+                    form.GetType().GetMethod("Recalculate", BindingFlags.Instance |
+                        BindingFlags.NonPublic, null, Type.EmptyTypes, null).Invoke(form, null);
+                    var calculated = (System.Collections.Generic.Dictionary<int, string>)Field(form, "calculated");
+                    Equal("14", calculated[1]);
+                    grid[0, 0].Value = "8";
+                    form.GetType().GetMethod("Recalculate", BindingFlags.Instance |
+                        BindingFlags.NonPublic, null, Type.EmptyTypes, null).Invoke(form, null);
+                    Equal("16", calculated[1]);
+                    var writes = new System.Collections.Generic.List<ScriptCellWrite> {
+                        new ScriptCellWrite { Row = 0, Column = 2, Value = "script" },
+                        new ScriptCellWrite { Row = 1, Column = 2, Value = 42 }
+                    };
+                    Call(form, "ApplyScriptWrites", writes);
+                    Equal("script", grid[2, 0].Value);
+                    Equal("42", grid[2, 1].Value);
+                    Call(form, "Undo");
+                    Equal(null, grid[2, 0].Value);
+                    Equal(null, grid[2, 1].Value);
+                    Call(form, "Redo");
+                    Equal("script", grid[2, 0].Value);
+                    Equal(true, Invoke(form, "WriteWorkbook", scripted));
+                    form.Close();
+                }
+                using (var form = new SpreadsheetForm(scripted))
+                {
+                    form.Show(); Application.DoEvents();
+                    Equal(true, ((string)Field(form, "scriptCode")).Contains("DOUBLE"));
+                    Equal(false, Field(form, "scriptEnabled"));
+                    form.Close();
+                }
+                TestAiClient();
                 Console.WriteLine("Open file: CSV and older .dinkcel passed.");
             }
             finally
             {
                 Directory.Delete(directory, true);
             }
+        }
+
+        private static void TestAiClient()
+        {
+            var server = new TcpListener(IPAddress.Loopback, 0);
+            try
+            {
+                server.Start();
+                int port = ((IPEndPoint)server.LocalEndpoint).Port;
+                string received = null, authorization = null;
+                var responseTask = Task.Run(() =>
+                {
+                    using (var client = server.AcceptTcpClient())
+                    using (var stream = client.GetStream())
+                    {
+                        var reader = new StreamReader(stream, Encoding.UTF8);
+                        int length = 0;
+                        string line;
+                        while (!String.IsNullOrEmpty(line = reader.ReadLine()))
+                        {
+                            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                                length = Int32.Parse(line.Substring(15).Trim());
+                            if (line.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase))
+                                authorization = line.Substring(14).Trim();
+                        }
+                        var body = new char[length];
+                        int count = 0;
+                        while (count < body.Length) count += reader.Read(body, count, body.Length - count);
+                        received = new string(body);
+                        byte[] payload = Encoding.UTF8.GetBytes("{\"choices\":[{\"message\":{\"content\":\"AI answer\"}}]}");
+                        byte[] header = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + payload.Length + "\r\nConnection: close\r\n\r\n");
+                        stream.Write(header, 0, header.Length);
+                        stream.Write(payload, 0, payload.Length);
+                    }
+                });
+                string secret = "test-private-key";
+                var settings = new AiConfiguration { Endpoint = "http://localhost:" + port + "/v1/chat/completions",
+                    Model = "test-model", ProtectedKey = Convert.ToBase64String(ProtectedData.Protect(
+                        Encoding.UTF8.GetBytes(secret), null, DataProtectionScope.CurrentUser)) };
+                string settingsJson = new JavaScriptSerializer().Serialize(settings);
+                Equal(false, settingsJson.Contains(secret));
+                Equal(settings.ProtectedKey,
+                    new JavaScriptSerializer().Deserialize<AiConfiguration>(settingsJson).ProtectedKey);
+                Equal("AI answer", AiClient.Send(settings, "only this prompt"));
+                responseTask.Wait();
+                Equal("Bearer " + secret, authorization);
+                Equal(true, received.Contains("only this prompt"));
+                Equal(false, received.Contains("unrelated sheet data"));
+            }
+            finally { server.Stop(); }
         }
 
         private static object Field(object target, string name)

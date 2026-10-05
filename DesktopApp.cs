@@ -85,6 +85,7 @@ namespace DinkCel
         public bool HasBackground;
         public string ThemeId;
         public bool StructureProtected;
+        public string ScriptCode = "";
         public WorkbookSnapshot() { Sheets.Add(new SheetSnapshot()); }
     }
 
@@ -196,6 +197,7 @@ namespace DinkCel
         private readonly FlowLayoutPanel sheetTabs = new FlowLayoutPanel();
         private readonly List<SheetState> sheets = new List<SheetState>();
         private bool structureProtected;
+        private string scriptCode = "";
         private int activeSheetIndex;
         private readonly List<Rectangle> merges = new List<Rectangle>();
         private CellState[,] copiedCells;
@@ -272,6 +274,7 @@ namespace DinkCel
 
         public SpreadsheetForm(string startupPath)
         {
+            EmbeddedDependencies.Install();
             Text = "DinkCel";
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             Width = 1380;
@@ -416,6 +419,10 @@ namespace DinkCel
             AddMenuItem(viewMenu, "Màn hình bắt đầu", Keys.None, ShowWelcome);
             menu.Items.Add(viewMenu);
             AddSpreadsheetMenus();
+            var scriptMenu = new ToolStripMenuItem("Script");
+            AddMenuItem(scriptMenu, "Script Editor...", Keys.Control | Keys.Shift | Keys.J, OpenScriptEditor);
+            AddMenuItem(scriptMenu, "AI settings...", Keys.None, OpenAiSettings);
+            menu.Items.Add(scriptMenu);
             var helpMenu = new ToolStripMenuItem("Trợ giúp");
             AddMenuItem(helpMenu, "Giấy phép thư viện...", Keys.None, ShowThirdPartyLicenses);
             menu.Items.Add(helpMenu);
@@ -819,6 +826,8 @@ namespace DinkCel
                         LastColumn = named.Range.Right - 1
                     };
                 }, null, ResolveStructuredRange);
+            if (formulaEngine != null && !String.IsNullOrWhiteSpace(scriptCode))
+                ConfigureCustomFunctions(formulaEngine);
             else if (changedRow >= 0 && changedColumn >= 0)
                 formulaEngine.Invalidate(sheets[activeSheetIndex].Name,
                     changedRow, changedColumn);
@@ -1491,6 +1500,9 @@ namespace DinkCel
             sheets.Clear();
             sheets.Add(new SheetState { Name = "Sheet1" });
             structureProtected = false;
+            scriptCode = "";
+            scriptEnabled = false;
+            aiEnabled = false;
             grid.ReadOnly = false;
             activeSheetIndex = 0;
             merges.Clear();
@@ -1559,6 +1571,9 @@ namespace DinkCel
                         ApplySheetBackground(workbook.Background, false);
                     sheets.Clear();
                     structureProtected = workbook.StructureProtected;
+                    scriptCode = workbook.ScriptCode ?? "";
+                    scriptEnabled = false;
+                    aiEnabled = false;
                     namedRanges.Clear(); namedRanges.AddRange(workbook.NamedRanges);
                     pivots.Clear(); pivots.AddRange(workbook.Pivots);
                     foreach (SheetSnapshot snapshot in workbook.Sheets)
@@ -1629,6 +1644,7 @@ namespace DinkCel
                 throw new InvalidDataException("Định dạng bảng tính không hợp lệ.");
             var workbook = new WorkbookSnapshot();
             workbook.StructureProtected = (bool?)document.Root.Attribute("structureProtected") ?? false;
+            workbook.ScriptCode = (string)document.Root.Element("script") ?? "";
             XAttribute themeAttribute = document.Root.Attribute("theme");
             if (themeAttribute != null)
                 workbook.ThemeId = themeAttribute.Value;
@@ -1796,6 +1812,13 @@ namespace DinkCel
 
         private bool WriteDocument(string path)
         {
+            if (!string.Equals(Path.GetExtension(path), ".dinkcel", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(scriptCode) &&
+                MessageBox.Show(this,
+                    "DinkCel scripts are stored only in .dinkcel files. This export will omit the script code. Save anyway?",
+                    "DinkCel — scripts omitted", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return false;
             if (string.Equals(Path.GetExtension(path), ".xlsx", StringComparison.OrdinalIgnoreCase) &&
                 (objects.Count > 0 || sheets.Any(s => s.Objects.Count > 0)) &&
                 MessageBox.Show(this,
@@ -1939,6 +1962,8 @@ namespace DinkCel
                     new XAttribute("background",
                         ColorTranslator.ToHtml(sheetBackground)),
                     new XAttribute("structureProtected", structureProtected));
+                if (!string.IsNullOrEmpty(scriptCode))
+                    root.Add(new XElement("script", new XAttribute("language", "javascript"), scriptCode));
                 foreach (SheetState state in sheets)
                     root.Add(SerializeSheet(SnapshotFromState(state)));
                 SerializeWorkbookMetadata(root, namedRanges, pivots);

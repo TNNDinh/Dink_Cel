@@ -1,5 +1,24 @@
 # DinkCel
 
+## v1.1.0 — DinkCel Script và AI
+
+- Mở **Script > Script Editor** (`Ctrl+Shift+J`) để viết JavaScript, lưu mã cùng workbook `.dinkcel`, chọn hàm và chạy. Ví dụ editor tạo sẵn thao tác đọc/ghi ô và hàm `DOUBLE`.
+- API `DinkCel.getActiveWorkbook().getActiveSheet()` / `getSheetByName(name)` / `getRange("A1:B2")` hỗ trợ `getValues`, `getValue`, `setValues`, `setValue`; `Logger.log` ghi ra console. Một lần Run sửa ô là một bước Undo. Lỗi hoặc bấm Stop trước khi ghi không làm thay đổi ô.
+- Đánh dấu `/** @customfunction */` trước khai báo hàm để dùng như `=DOUBLE(A1)`. Workbook vừa mở không tự chạy script: mở editor rồi bấm **Save script** để bật hàm cho phiên hiện tại.
+- **Script > AI settings** cấu hình endpoint kiểu OpenAI Chat Completions và model. Endpoint phải dùng HTTPS hoặc HTTP localhost. Khóa API được mã hóa bằng Windows DPAPI trong `%APPDATA%\DinkCel\ai.json`, không lưu trong workbook. Bật AI cho phiên hiện tại và duyệt từng prompt trước khi gửi. Script gọi `AI.generate(prompt)`; hàm tùy chỉnh dùng AI hiển thị `#BUSY!` rồi cập nhật kết quả khi hoàn tất, tối đa 10 request từ công thức trong một phiên và cache theo prompt/model/script.
+- Script hiện có một tệp mã cho mỗi workbook, chỉ ghi vào sheet đang mở. Chưa có trigger, thư viện nhiều tệp, quyền file, cú pháp Apps Script đầy đủ hoặc API Google. Script không được xuất sang `.xlsx`; app cảnh báo trước khi lưu định dạng khác.
+
+Máy chạy cần **.NET Framework 4.6.2 trở lên**. File phát hành vẫn là một `DinkCel.exe`.
+
+Ví dụ hàm AI dùng trong ô:
+
+```js
+/** @customfunction */
+function AI_SUMMARY(text) { return AI.generate("Tóm tắt ngắn: " + text); }
+```
+
+Sau khi bật script và AI cho phiên hiện tại, nhập `=AI_SUMMARY(A1)` vào ô.
+
 ## v1.0.0 — Excel-Compatible
 
 - Workbook: nhiều sheet, nhân bản/sao chép trong workbook, đổi thứ tự, ẩn/hiện, màu tab và bảo vệ sheet/cấu trúc workbook (không đặt mật khẩu).
@@ -8,7 +27,7 @@
 - Khi mở file `.xlsx`, DinkCel kiểm tra VBA, liên kết ngoài, Pivot cache, drawing, chart, công thức mảng/chia sẻ và các phần chưa nhận diện. Trước khi lưu file đã nhập từ Excel hoặc ghi đè lên file `.xlsx` có sẵn, ứng dụng liệt kê phần có thể thay đổi/mất, yêu cầu xác nhận và tạo bản `.bak` trước khi ghi đè.
 - Lưới hiện giới hạn 50.000 hàng × 26 cột. File có ô ngoài giới hạn sẽ bị từ chối khi mở để tránh mất dữ liệu âm thầm. Các tính năng Excel chưa hỗ trợ có thể thay đổi sau khi người dùng đồng ý lưu; giữ bản gốc hoặc dùng bản backup để đối chiếu.
 
-Thiết kế DinkCel Script và hàm AI được ghi tại [docs/appscript-design.md](docs/appscript-design.md) cho phiên bản sau; v1.0.0 chưa chạy script hoặc gọi AI.
+Thiết kế và các phần mở rộng tiếp theo được ghi tại [docs/appscript-design.md](docs/appscript-design.md).
 
 Ứng dụng bảng tính desktop cho Windows. Chạy trực tiếp bằng file DinkCel.exe; không cần trình duyệt, Node.js hay máy chủ web.
 
