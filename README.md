@@ -1,5 +1,14 @@
 # DinkCel
 
+## v2.0.0 — DinkCel Advanced
+
+- **Data import:** tạo query từ sheet hiện có, CSV, JSON, XML, HTTP/API GET hoặc ODBC `SELECT`; thêm các bước Filter, Sort, Rename, Remove, Type và Distinct rồi dùng **Data Model > Queries > Refresh all queries** để chạy lại. Nguồn ngoài có thể tải vào sheet, Data Model hoặc cả hai; nguồn sheet tải vào Data Model.
+- **Data Model:** lưu bảng dữ liệu trong `.dinkcel`, nối bảng fact với bảng tra cứu bằng khóa, tạo cột tính toán và measure. **Model Pivot** dùng được trường từ bảng liên kết, measure, Slicer, Timeline và Pivot Chart; làm mới kết quả từ model sau khi query đổi.
+- **Automation:** tiếp tục dùng DinkCel Script (JavaScript) và hàm AI từ v1.1.0. Script được lưu cùng workbook `.dinkcel` và không tự chạy khi mở file.
+- **Collaboration:** ghi chú ô đã có từ v1.0.0. Cộng tác thời gian thực, lịch sử phiên bản trên máy chủ và tệp cloud vẫn là hướng phát triển sau v2.0.
+
+Xem [hướng dẫn Data Model](docs/DATA_MODEL.md) để tạo query, quan hệ và Model Pivot. Query, các bước biến đổi, dữ liệu model và cấu hình Pivot chỉ được lưu trong `.dinkcel`; khi xuất `.xlsx` app cảnh báo và chỉ giữ giá trị hiển thị trên sheet. Mật khẩu ODBC và Bearer token không được lưu trong workbook.
+
 ## v1.3.0 — Advanced Excel
 
 - Pivot: lọc giá trị theo kiểu Slicer, lọc khoảng ngày bằng Timeline, tạo Pivot Chart gắn với kết quả Pivot, trường tính toán với cú pháp `{Tên cột}`, nhóm theo ngày/tuần/tháng/quý/năm. Pivot tiếp tục hỗ trợ làm mới, sắp xếp, tổng nhóm và mở rộng/thu gọn.

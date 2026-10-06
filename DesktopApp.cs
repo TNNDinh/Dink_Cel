@@ -81,6 +81,11 @@ namespace DinkCel
         public readonly List<NamedRange> NamedRanges = new List<NamedRange>();
         public readonly List<PivotDefinition> Pivots = new List<PivotDefinition>();
         public readonly List<ScenarioDefinition> Scenarios = new List<ScenarioDefinition>();
+        public readonly List<DataQuery> DataQueries = new List<DataQuery>();
+        public readonly List<ModelTable> ModelTables = new List<ModelTable>();
+        public readonly List<ModelRelationship> ModelRelationships = new List<ModelRelationship>();
+        public readonly List<ModelMeasure> ModelMeasures = new List<ModelMeasure>();
+        public readonly List<ModelPivotDefinition> ModelPivots = new List<ModelPivotDefinition>();
         public Dictionary<int, CellSnapshot> Cells { get { return Sheets[0].Cells; } }
         public Color Background = Color.FromArgb(232, 240, 248);
         public bool HasBackground;
@@ -422,6 +427,7 @@ namespace DinkCel
             menu.Items.Add(viewMenu);
             AddSpreadsheetMenus();
             AddAdvancedExcelMenus();
+            AddDataIntegrationMenus();
             var scriptMenu = new ToolStripMenuItem("Script");
             AddMenuItem(scriptMenu, "Script Editor...", Keys.Control | Keys.Shift | Keys.J, OpenScriptEditor);
             AddMenuItem(scriptMenu, "AI settings...", Keys.None, OpenAiSettings);
@@ -1551,6 +1557,8 @@ namespace DinkCel
             printSettings = new PrintSettings();
             RefreshChartOverlays();
             namedRanges.Clear(); pivots.Clear(); scenarios.Clear();
+            dataQueries.Clear(); modelTables.Clear(); modelRelationships.Clear();
+            modelMeasures.Clear(); modelPivots.Clear();
             freezeRow = freezeColumn = 0;
             splitX = splitY = 0;
             showGridlines = showHeadings = true;
@@ -1614,6 +1622,11 @@ namespace DinkCel
                     namedRanges.Clear(); namedRanges.AddRange(workbook.NamedRanges);
                     pivots.Clear(); pivots.AddRange(workbook.Pivots);
                     scenarios.Clear(); scenarios.AddRange(workbook.Scenarios);
+                    dataQueries.Clear(); dataQueries.AddRange(workbook.DataQueries);
+                    modelTables.Clear(); modelTables.AddRange(workbook.ModelTables);
+                    modelRelationships.Clear(); modelRelationships.AddRange(workbook.ModelRelationships);
+                    modelMeasures.Clear(); modelMeasures.AddRange(workbook.ModelMeasures);
+                    modelPivots.Clear(); modelPivots.AddRange(workbook.ModelPivots);
                     foreach (SheetSnapshot snapshot in workbook.Sheets)
                     {
                         SheetState state = StateFromSnapshot(snapshot);
@@ -1694,6 +1707,7 @@ namespace DinkCel
             }
             ReadWorkbookMetadata(document.Root, workbook);
             ReadScenarios(document.Root, workbook);
+            ReadDataIntegration(document.Root, workbook);
             List<XElement> sheetElements = new List<XElement>(document.Root.Elements("sheet"));
             if (sheetElements.Count > 0)
             {
@@ -1866,6 +1880,14 @@ namespace DinkCel
                     MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 return false;
             if (!string.Equals(Path.GetExtension(path), ".dinkcel", StringComparison.OrdinalIgnoreCase) &&
+                (dataQueries.Count > 0 || modelTables.Count > 0 || modelPivots.Count > 0) &&
+                MessageBox.Show(this,
+                    "Queries, refresh steps, Data Model tables, relationships, measures and Model Pivot settings " +
+                    "are stored only in .dinkcel. Other formats keep the visible sheet values but omit this metadata. Save anyway?",
+                    "DinkCel - Data Model omitted", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return false;
+            if (!string.Equals(Path.GetExtension(path), ".dinkcel", StringComparison.OrdinalIgnoreCase) &&
                 pivots.Count > 0 &&
                 MessageBox.Show(this,
                     "Pivot results will be saved as cells, but Pivot definitions, slicers, timelines, " +
@@ -2030,6 +2052,7 @@ namespace DinkCel
                     root.Add(SerializeSheet(SnapshotFromState(state)));
                 SerializeWorkbookMetadata(root, namedRanges, pivots);
                 SerializeScenarios(root);
+                SerializeDataIntegration(root);
                 new XDocument(root).Save(path);
                 currentPath = path;
                 csvDocument = null;

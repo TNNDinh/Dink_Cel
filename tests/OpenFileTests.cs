@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.IO.Compression;
 using System.Linq;
+using System.Collections.Generic;
 
 namespace DinkCel
 {
@@ -243,6 +244,7 @@ namespace DinkCel
                 TestDynamicArrayUi(directory);
                 TestAdvancedExcel(directory);
                 TestNamedObjects(directory);
+                TestDataIntegration(directory);
                 Console.WriteLine("Open file: CSV and older .dinkcel passed.");
             }
             finally
@@ -292,6 +294,157 @@ namespace DinkCel
                 form.Show(); Application.DoEvents();
                 var scenarios = (System.Collections.Generic.List<ScenarioDefinition>)Field(form, "scenarios");
                 Equal(1, scenarios.Count); Equal("50", scenarios[0].Values[0]);
+                form.Close();
+            }
+        }
+
+        private static void TestDataIntegration(string directory)
+        {
+            TabularData csv = QueryEngine.FromCsv("CityId,Amount,Cost,Date\n1,10,4,2024-01-01\n1,20,5,2024-01-15\n2,7,2,2024-02-01\n");
+            Equal(3, csv.Rows.Count); Equal("Amount", csv.Columns[1]);
+            bool rejectedOverflow = false;
+            try { QueryEngine.FromCsv("A,B\n1,2,3\n"); }
+            catch (InvalidDataException) { rejectedOverflow = true; }
+            Equal(true, rejectedOverflow);
+            TabularData json = QueryEngine.FromJson("{\"data\":[{\"Id\":\"1\",\"City\":\"Hanoi\"},{\"Id\":\"2\",\"City\":\"Saigon\"}]}");
+            Equal("Hanoi", json.Rows[0][1]);
+            Equal("B", QueryEngine.FromJson("[{\"Name\":\"A\"},{\"name\":\"B\"}]").Rows[1][0]);
+            TabularData xml = QueryEngine.FromXml("<cities><city id='1'><Name>Hanoi</Name></city><city id='2'><Name>Saigon</Name></city></cities>");
+            Equal("1", xml.Rows[0][0]); Equal("Name", xml.Columns[1]);
+            Equal(false, QueryEngine.ReadOnlySql("DELETE FROM Orders"));
+            Equal(true, QueryEngine.ReadOnlySql("SELECT * FROM Orders"));
+            var transformed = QueryEngine.Apply(csv, new[] {
+                new QueryStep { Kind = "Filter", Column = "CityId", Operator = "Equals", Value = "1", Value2 = "Text" },
+                new QueryStep { Kind = "Sort", Column = "Amount", Operator = "Descending" },
+                new QueryStep { Kind = "Rename", Column = "Cost", Value = "Expense" },
+                new QueryStep { Kind = "Type", Column = "Amount", Value = "Number" }
+            });
+            Equal(2, transformed.Rows.Count); Equal("20", transformed.Rows[0][1]);
+            Equal("Expense", transformed.Columns[2]);
+            using (var sheetForm = new SpreadsheetForm(null))
+            {
+                sheetForm.Show(); Application.DoEvents();
+                var cells = (DataGridView)Field(sheetForm, "grid");
+                cells[0, 0].Value = "Amount"; cells[1, 0].Value = "Margin";
+                cells[0, 1].Value = "10"; cells[1, 1].Value = "=A2-4";
+                var sheetQuery = new DataQuery { Kind = "Sheet", Source = "Sheet1", LoadTo = "Model" };
+                var sheetData = (TabularData)Invoke(sheetForm, "LoadDataQuery", sheetQuery, "");
+                Equal("6", sheetData.Rows[0][1]);
+                SetField(sheetForm, "dirty", false);
+                sheetForm.Close();
+            }
+            string jsonPath = Path.Combine(directory, "import.json");
+            File.WriteAllText(jsonPath, "[{\"Name\":\"A\",\"Value\":3}]");
+            Equal("A", QueryEngine.Load(new DataQuery { Kind = "Json", Source = jsonPath }, "").Rows[0][0]);
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                string authorization = "";
+                var serve = Task.Run(() =>
+                {
+                    using (var client = listener.AcceptTcpClient())
+                    using (var stream = client.GetStream())
+                    {
+                        var reader = new StreamReader(stream, Encoding.ASCII);
+                        string line;
+                        while (!String.IsNullOrEmpty(line = reader.ReadLine()))
+                            if (line.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase))
+                                authorization = line.Substring(14).Trim();
+                        byte[] payload = Encoding.UTF8.GetBytes("[{\"Id\":1,\"City\":\"Hanoi\"}]");
+                        byte[] header = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+                            payload.Length + "\r\nConnection: close\r\n\r\n");
+                        stream.Write(header, 0, header.Length); stream.Write(payload, 0, payload.Length);
+                    }
+                });
+                var web = new DataQuery { Kind = "WebJson", Source = "http://127.0.0.1:" + port + "/data" };
+                Equal("Hanoi", QueryEngine.Load(web, "temporary-key").Rows[0][1]);
+                serve.Wait(); Equal("Bearer temporary-key", authorization);
+            }
+            finally { listener.Stop(); }
+            var orders = new ModelTable { Name = "Orders" };
+            orders.Data.Columns.AddRange(csv.Columns); orders.Data.Rows.AddRange(csv.Rows);
+            orders.Calculated.Add(new ModelCalculatedColumn { Name = "Margin", Formula = "={Amount}-{Cost}" });
+            Equal("6", DataModelEngine.Materialize(orders).Rows[0][4]);
+            var cities = new ModelTable { Name = "Cities" };
+            cities.Data.Columns.AddRange(json.Columns); cities.Data.Rows.AddRange(json.Rows);
+            var relation = new ModelRelationship { FactTable = "Orders", FactColumn = "CityId",
+                LookupTable = "Cities", LookupColumn = "Id" };
+            var tables = new List<ModelTable> { orders, cities };
+            var relations = new List<ModelRelationship> { relation };
+            TabularData projection = DataModelEngine.Projection("Orders", tables, relations);
+            Equal("Cities.City", projection.Columns.Last());
+            Equal("Hanoi", projection.Rows[0].Last());
+            var measure = new ModelMeasure { Name = "Margin total", Table = "Orders",
+                Formula = "={Orders.Margin}", Aggregate = "Sum" };
+            var modelPivot = new ModelPivotDefinition { FactTable = "Orders", RowField = "Cities.City",
+                Measure = "Margin total", TargetSheet = "ModelPivot1" };
+            PivotResult result = DataModelEngine.BuildPivot(modelPivot, tables, relations,
+                new[] { measure }, 200, 26);
+            Equal(true, result.Rows.Any(row => row[0] == "Hanoi" && row[1] == "21"));
+            modelPivot.TimelineField = "Orders.Date";
+            modelPivot.StartDate = "2024-01-01"; modelPivot.EndDate = "2024-01-31";
+            result = DataModelEngine.BuildPivot(modelPivot, tables, relations, new[] { measure }, 200, 26);
+            Equal(false, result.Rows.Any(row => row[0] == "Saigon"));
+            string csvPath = Path.Combine(directory, "orders.csv");
+            File.WriteAllText(csvPath, "CityId,Amount,Cost,Date\n1,10,4,2024-01-01\n1,20,5,2024-01-15\n2,7,2,2024-02-01\n");
+            string citiesPath = Path.Combine(directory, "cities.json");
+            File.WriteAllText(citiesPath, "{\"data\":[{\"Id\":\"1\",\"City\":\"Hanoi\"},{\"Id\":\"2\",\"City\":\"Saigon\"}]}");
+            string native = Path.Combine(directory, "data_model.dinkcel");
+            using (var form = new SpreadsheetForm(null))
+            {
+                form.Show(); Application.DoEvents();
+                var ordersQuery = new DataQuery { Name = "Orders", Kind = "Csv",
+                    Source = csvPath, LoadTo = "Model" };
+                var citiesQuery = new DataQuery { Name = "Cities", Kind = "Json",
+                    Source = citiesPath, LoadTo = "Model" };
+                Invoke(form, "ApplyDataQueryResult", ordersQuery, csv);
+                Invoke(form, "ApplyDataQueryResult", citiesQuery, json);
+                ((List<ModelTable>)Field(form, "modelTables")).First(t => t.Name == "Orders")
+                    .Calculated.AddRange(orders.Calculated);
+                var visibleQuery = new DataQuery { Name = "Visible", Kind = "Csv",
+                    Source = csvPath, LoadTo = "Sheet", Target = "Imported" };
+                visibleQuery.Steps.Add(new QueryStep { Kind = "Filter", Column = "CityId",
+                    Operator = "Equals", Value = "1", Value2 = "Text" });
+                visibleQuery.Steps.Add(new QueryStep { Kind = "Sort", Column = "Amount",
+                    Operator = "Descending" });
+                visibleQuery.Steps.Add(new QueryStep { Kind = "Rename", Column = "Cost", Value = "Expense" });
+                visibleQuery.Steps.Add(new QueryStep { Kind = "Type", Column = "Amount", Value = "Number" });
+                Invoke(form, "ApplyDataQueryResult", visibleQuery, transformed);
+                var grid = (DataGridView)Field(form, "grid");
+                Equal("CityId", grid[0, 0].Value); Equal("20", grid[1, 1].Value);
+                ((List<DataQuery>)Field(form, "dataQueries")).AddRange(new[] { ordersQuery, citiesQuery, visibleQuery });
+                ((List<ModelRelationship>)Field(form, "modelRelationships")).Add(relation);
+                ((List<ModelMeasure>)Field(form, "modelMeasures")).Add(measure);
+                ((List<ModelPivotDefinition>)Field(form, "modelPivots")).Add(modelPivot);
+                Call(form, "AddSheet");
+                ((List<SheetState>)Field(form, "sheets"))[2].Name = "ModelPivot1";
+                Call(form, "RefreshModelPivot", modelPivot);
+                grid = (DataGridView)Field(form, "grid");
+                Equal(true, Enumerable.Range(1, modelPivot.LastRows - 1).Any(r =>
+                    Convert.ToString(grid[0, r].Value) == "Hanoi" &&
+                    Convert.ToString(grid[1, r].Value) == "21"));
+                Equal(true, Invoke(form, "WriteWorkbook", native));
+                form.Close();
+            }
+            using (var form = new SpreadsheetForm(native))
+            {
+                form.Show(); Application.DoEvents();
+                Equal(2, ((List<ModelTable>)Field(form, "modelTables")).Count);
+                Equal(1, ((List<ModelRelationship>)Field(form, "modelRelationships")).Count);
+                Equal(1, ((List<ModelMeasure>)Field(form, "modelMeasures")).Count);
+                Equal(1, ((List<ModelPivotDefinition>)Field(form, "modelPivots")).Count);
+                Equal(3, ((List<DataQuery>)Field(form, "dataQueries")).Count);
+                Call(form, "RefreshAllDataQueries");
+                Call(form, "SwitchSheet", 1);
+                var grid = (DataGridView)Field(form, "grid");
+                Equal("CityId", grid[0, 0].Value);
+                Equal("Expense", grid[2, 0].Value);
+                Call(form, "SwitchSheet", 2);
+                Equal(true, Enumerable.Range(1, modelPivot.LastRows - 1).Any(r =>
+                    Convert.ToString(grid[0, r].Value) == "Hanoi"));
+                SetField(form, "dirty", false);
                 form.Close();
             }
         }

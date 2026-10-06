@@ -439,6 +439,20 @@ namespace DinkCel
                 if (string.Equals(pivot.SourceSheet, oldName, StringComparison.OrdinalIgnoreCase)) pivot.SourceSheet = name;
                 if (string.Equals(pivot.TargetSheet, oldName, StringComparison.OrdinalIgnoreCase)) pivot.TargetSheet = name;
             }
+            foreach (DataQuery query in dataQueries)
+            {
+                if (query.Kind == "Sheet" &&
+                    string.Equals(query.Source, oldName, StringComparison.OrdinalIgnoreCase))
+                    query.Source = name;
+                if (query.LoadTo != "Model" &&
+                    string.Equals(query.Target, oldName, StringComparison.OrdinalIgnoreCase)) query.Target = name;
+            }
+            foreach (ModelPivotDefinition pivot in modelPivots)
+                if (string.Equals(pivot.TargetSheet, oldName, StringComparison.OrdinalIgnoreCase))
+                    pivot.TargetSheet = name;
+            foreach (ChartDefinition chart in sheets.SelectMany(s => s.Charts).Concat(charts))
+                if (string.Equals(chart.PivotSource, oldName, StringComparison.OrdinalIgnoreCase))
+                    chart.PivotSource = name;
             foreach (SheetState sheet in sheets)
                 foreach (int key in sheet.Cells.Keys.ToArray())
                 {
@@ -520,6 +534,12 @@ namespace DinkCel
                 string.Equals(n.Sheet, deletedName, StringComparison.OrdinalIgnoreCase));
             pivots.RemoveAll(p => string.Equals(p.SourceSheet, deletedName, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(p.TargetSheet, deletedName, StringComparison.OrdinalIgnoreCase));
+            modelPivots.RemoveAll(p => string.Equals(p.TargetSheet, deletedName, StringComparison.OrdinalIgnoreCase));
+            dataQueries.RemoveAll(q => q.LoadTo == "Sheet" &&
+                string.Equals(q.Target, deletedName, StringComparison.OrdinalIgnoreCase));
+            foreach (DataQuery query in dataQueries.Where(q => q.LoadTo == "Both" &&
+                string.Equals(q.Target, deletedName, StringComparison.OrdinalIgnoreCase)))
+                query.LoadTo = "Model";
             activeSheetIndex = Math.Min(activeSheetIndex, sheets.Count - 1);
             RestoreSheet(sheets[activeSheetIndex]);
             LoadHistory();
