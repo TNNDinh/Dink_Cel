@@ -380,7 +380,8 @@ namespace DinkCel
             AddMenuItem(fileMenu, "Mở...", Keys.Control | Keys.O, OpenDocument);
             fileMenu.DropDownItems.Add(new ToolStripSeparator());
             AddMenuItem(fileMenu, "Lưu", Keys.Control | Keys.S, delegate { SaveDocument(); });
-            AddMenuItem(fileMenu, "Lưu thành...", Keys.None, delegate { SaveDocumentAs(); });
+            AddMenuItem(fileMenu, "Lưu thành...", Keys.Control | Keys.Shift | Keys.S,
+                delegate { SaveDocumentAs(); });
             menu.Items.Add(fileMenu);
             var editMenu = new ToolStripMenuItem("Chỉnh sửa");
             AddMenuItem(editMenu, "Sao chép", Keys.Control | Keys.C, CopySelected);
@@ -393,6 +394,8 @@ namespace DinkCel
             AddMenuItem(editMenu, "Hoàn tác", Keys.Control | Keys.Z, Undo);
             AddMenuItem(editMenu, "Làm lại", Keys.Control | Keys.Y, Redo);
             AddMenuItem(editMenu, "Xóa nội dung ô đã chọn", Keys.None, ClearSelectedCells);
+            AddMenuItem(editMenu, "Đi tới ô...", Keys.Control | Keys.G,
+                delegate { addressBox.Focus(); addressBox.SelectAll(); });
             editMenu.DropDownItems.Add(new ToolStripSeparator());
             AddMenuItem(editMenu, "Điền xuống", Keys.Control | Keys.D, FillDown);
             AddMenuItem(editMenu, "Điền sang phải", Keys.Control | Keys.R, FillRight);
@@ -1126,6 +1129,24 @@ namespace DinkCel
             foreach (Rectangle merge in merges)
                 if (merge.Contains(e.ColumnIndex, e.RowIndex))
                 { e.Handled = true; return; }
+
+            if (cutPending && copiedMask != null && copiedSheetIndex == activeSheetIndex &&
+                e.RowIndex >= copiedTop && e.ColumnIndex >= copiedLeft &&
+                e.RowIndex - copiedTop < copiedMask.GetLength(0) &&
+                e.ColumnIndex - copiedLeft < copiedMask.GetLength(1) &&
+                copiedMask[e.RowIndex - copiedTop, e.ColumnIndex - copiedLeft])
+            {
+                e.Paint(e.CellBounds, e.PaintParts & ~DataGridViewPaintParts.Focus);
+                using (var pen = new Pen(theme.Accent, 2F))
+                {
+                    pen.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
+                    Rectangle border = e.CellBounds;
+                    border.Width -= 1; border.Height -= 1;
+                    e.Graphics.DrawRectangle(pen, border);
+                }
+                e.Handled = true;
+                return;
+            }
 
             if (grid.CurrentCell != null &&
                 e.RowIndex == grid.CurrentCell.RowIndex &&
@@ -2679,6 +2700,18 @@ namespace DinkCel
 
         protected override bool ProcessCmdKey(ref Message message, Keys keyData)
         {
+            TextBox editor = grid.IsCurrentCellInEditMode ? grid.EditingControl as TextBox :
+                addressBox.Focused ? addressBox : contentBox.Focused ? contentBox : null;
+            if (editor != null)
+            {
+                if (keyData == (Keys.Control | Keys.X)) { editor.Cut(); return true; }
+                if (keyData == (Keys.Control | Keys.C)) { editor.Copy(); return true; }
+                if (keyData == (Keys.Control | Keys.V)) { editor.Paste(); return true; }
+                if (keyData == (Keys.Control | Keys.A)) { editor.SelectAll(); return true; }
+                if (keyData == (Keys.Control | Keys.Z)) { if (editor.CanUndo) editor.Undo(); return true; }
+                if (keyData == (Keys.Control | Keys.Y) ||
+                    keyData == (Keys.Control | Keys.Shift | Keys.Z)) return true;
+            }
             if (keyData == (Keys.Control | Keys.K)) { ShowCommandPalette(); return true; }
             if (keyData == (Keys.Control | Keys.Shift | Keys.P)) { ShowQuickNavigator(); return true; }
             if (keyData == (Keys.Control | Keys.Shift | Keys.I)) { ToggleInspector(); return true; }
@@ -2691,7 +2724,8 @@ namespace DinkCel
                 if (!grid.ReadOnly) Undo();
                 return true;
             }
-            if (keyData == (Keys.Control | Keys.Y))
+            if (keyData == (Keys.Control | Keys.Y) ||
+                keyData == (Keys.Control | Keys.Shift | Keys.Z))
             {
                 if (!grid.ReadOnly) Redo();
                 return true;

@@ -305,7 +305,7 @@ namespace DinkCel
                 if (grid.IsCurrentCellInEditMode) grid.CancelEdit();
                 cutPending = false; fillDragging = false;
                 grid.Capture = false; grid.Cursor = Cursors.Default;
-                UpdateSelection(); return true;
+                UpdateSelection(); grid.Invalidate(); return true;
             }
             if (grid.IsCurrentCellInEditMode)
             {
@@ -325,6 +325,23 @@ namespace DinkCel
             if (control && key == Keys.D) { FillDown(); return true; }
             if (control && key == Keys.R) { FillRight(); return true; }
             if (control && key == Keys.A) { SelectRectangle(new Rectangle(0, 0, ColumnCount, RowCount), 0, 0, false); return true; }
+            if (control && !shift && (key == Keys.PageUp || key == Keys.PageDown))
+            {
+                MoveToAdjacentSheet(key == Keys.PageDown ? 1 : -1);
+                return true;
+            }
+            if ((!control && !shift && key == Keys.F5) ||
+                (control && !shift && key == Keys.G))
+            {
+                addressBox.Focus(); addressBox.SelectAll();
+                return true;
+            }
+            if (!control && shift && key == Keys.F11) { AddSheet(); return true; }
+            if (key == Keys.Delete && !control && !shift)
+            {
+                if (!grid.ReadOnly) ClearSelectedCells();
+                return true;
+            }
             if (control && key == Keys.Space) { SelectHeader(grid.CurrentCell.ColumnIndex, false); return true; }
             if (!control && shift && key == Keys.Space) { SelectHeader(grid.CurrentCell.RowIndex, true); return true; }
             if (control && (key == Keys.Home || key == Keys.End))
@@ -418,9 +435,13 @@ namespace DinkCel
             }
             cutPending = cut;
             status.Text = cut ? "Đã cắt vùng chọn; chọn ô đích để dán" : "Đã sao chép vùng chọn";
+            grid.Invalidate();
         }
 
-        private void CutSelected() { CopySelection(true); }
+        private void CutSelected()
+        {
+            if (!grid.ReadOnly) CopySelection(true);
+        }
         private void PasteValues() { PasteClipboard(PasteKind.Values); }
         private void PasteFormulas() { PasteClipboard(PasteKind.Formulas); }
         private void PasteFormats() { PasteClipboard(PasteKind.Formats); }
@@ -458,7 +479,7 @@ namespace DinkCel
 
         private void PasteClipboard(PasteKind kind)
         {
-            if (grid.CurrentCell == null) return;
+            if (grid.CurrentCell == null || grid.ReadOnly) return;
             bool internalCopy = copiedCells != null && copiedMask != null && clipboardFallback &&
                 GetClipboardSequenceNumber() == clipboardFallbackSequence;
             bool hasText = false, hasHtml = false;
@@ -574,6 +595,7 @@ namespace DinkCel
             }
             finally { grid.ResumeLayout(); loading = false; }
             if (cutPending) cutPending = false;
+            grid.Invalidate();
             Recalculate(); RecordChange(); MarkDirty();
             if (crossMove != null) crossSheetMoves[MoveKey(lastState.RevisionId)] = crossMove;
             SelectRectangle(new Rectangle(targetColumn, targetRow, outputColumns, outputRows),

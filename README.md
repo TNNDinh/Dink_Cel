@@ -1,5 +1,11 @@
 # DinkCel
 
+## v2.0.1 — Phím tắt bảng tính
+
+- `Ctrl+X` cắt ô hoặc vùng chọn; vùng chờ dán có viền nét đứt. `Ctrl+V` chuyển dữ liệu sang ô đích, `Esc` hủy thao tác cắt. Khi đang sửa chữ trong ô, `Ctrl+X/C/V/A/Z` tác động lên phần chữ đang nhập.
+- Thêm `Ctrl+Shift+Z` làm lại, `Ctrl+PageUp/PageDown` chuyển sheet, `Shift+F11` thêm sheet, `F5` hoặc `Ctrl+G` mở Name Box, `Ctrl+Shift+S` lưu thành tệp khác. Phím `Delete` xóa nội dung vùng chọn.
+- Các phím đã có gồm `Ctrl+C/V/Z/Y`, `Ctrl+A`, `Ctrl+Space`, `Shift+Space`, `Ctrl+Home/End`, `Ctrl+Arrow`, `Ctrl+Shift+Arrow`, `F2`, `Enter`, `Tab`, `Ctrl+D/R`, `Ctrl+F/H`, `Ctrl+N/O/S/P`, `Ctrl+B/I/U`.
+
 ## v2.0.0 — DinkCel Advanced
 
 - **Data import:** tạo query từ sheet hiện có, CSV, JSON, XML, HTTP/API GET hoặc ODBC `SELECT`; thêm các bước Filter, Sort, Rename, Remove, Type và Distinct rồi dùng **Data Model > Queries > Refresh all queries** để chạy lại. Nguồn ngoài có thể tải vào sheet, Data Model hoặc cả hai; nguồn sheet tải vào Data Model.

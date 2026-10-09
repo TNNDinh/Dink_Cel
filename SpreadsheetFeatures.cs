@@ -395,6 +395,18 @@ namespace DinkCel
             RefreshSheetTabs();
         }
 
+        private void MoveToAdjacentSheet(int direction)
+        {
+            for (int index = activeSheetIndex + direction;
+                index >= 0 && index < sheets.Count; index += direction)
+                if (!sheets[index].Hidden)
+                {
+                    SwitchSheet(index);
+                    grid.Focus();
+                    return;
+                }
+        }
+
         private void AddSheet()
         {
             if (!CanChangeWorkbookStructure()) return;

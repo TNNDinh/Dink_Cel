@@ -60,6 +60,10 @@ namespace DinkCel
                 Equal(1, grid.CurrentCell.RowIndex);
                 Equal(true, Call(grid, "ProcessDialogKey", Keys.Tab));
                 Equal(1, grid.CurrentCell.ColumnIndex);
+                Equal(true, Call(form, "HandleEditingShortcut", Keys.F5));
+                Check(((TextBox)Field(form, "addressBox")).Focused,
+                    "F5 should focus the name box");
+                grid.Focus();
                 Console.WriteLine("v0.4 navigation passed.");
 
                 Equal(true, Call(form, "GoToAddress", "B2:D3,F5"));
@@ -184,6 +188,42 @@ namespace DinkCel
                 Equal("1", grid[0, 0].Value);
                 Equal(null, grid[2, 0].Value);
 
+                grid[18, 20].Value = "shortcut cut";
+                Call(form, "SelectRectangle", new Rectangle(18, 20, 1, 1), 18, 20, false);
+                grid.Focus();
+                Equal(true, Call(grid, "ProcessDataGridViewKey",
+                    new KeyEventArgs(Keys.Control | Keys.X)));
+                Equal(true, Field(form, "cutPending"));
+                Equal("shortcut cut", Clipboard.GetText());
+                Equal("shortcut cut", grid[18, 20].Value);
+                Call(form, "SelectRectangle", new Rectangle(19, 20, 1, 1), 19, 20, false);
+                Equal(true, Call(grid, "ProcessDataGridViewKey",
+                    new KeyEventArgs(Keys.Control | Keys.V)));
+                Equal(null, grid[18, 20].Value);
+                Equal("shortcut cut", grid[19, 20].Value);
+                Call(form, "Undo");
+                Equal("shortcut cut", grid[18, 20].Value);
+                Equal(null, grid[19, 20].Value);
+                Message command = Message.Create(IntPtr.Zero, 0x100, IntPtr.Zero, IntPtr.Zero);
+                Equal(true, Call(form, "ProcessCmdKey", command,
+                    Keys.Control | Keys.Shift | Keys.Z));
+                Equal(null, grid[18, 20].Value);
+                Equal("shortcut cut", grid[19, 20].Value);
+                Call(form, "Undo");
+                Console.WriteLine("Ctrl+X/V and Ctrl+Shift+Z shortcuts passed.");
+
+                Call(form, "SelectRectangle", new Rectangle(18, 20, 1, 1), 18, 20, false);
+                Equal(true, Call(form, "HandleEditingShortcut", Keys.F2));
+                TextBox editBox = (TextBox)grid.EditingControl;
+                editBox.Text = "alpha beta";
+                editBox.Select(0, 5);
+                Equal(true, Call(form, "ProcessCmdKey", command, Keys.Control | Keys.X));
+                Equal(" beta", editBox.Text);
+                Equal(false, Field(form, "cutPending"));
+                Call(form, "HandleEditingShortcut", Keys.Escape);
+                Equal("shortcut cut", grid[18, 20].Value);
+                Console.WriteLine("Ctrl+X while editing text passed.");
+
                 Call(form, "SelectRectangle", new Rectangle(0, 0, 1, 1), 0, 0, false);
                 Call(form, "CutSelected");
                 Call(form, "AddSheet");
@@ -207,6 +247,18 @@ namespace DinkCel
                 Call(form, "Redo");
                 Call(form, "SwitchSheet", 0);
                 Equal("99", grid[0, 0].Value);
+                grid.Focus();
+                Equal(true, Call(grid, "ProcessDataGridViewKey",
+                    new KeyEventArgs(Keys.Control | Keys.PageDown)));
+                Equal(1, Field(form, "activeSheetIndex"));
+                Equal(true, Call(grid, "ProcessDataGridViewKey",
+                    new KeyEventArgs(Keys.Control | Keys.PageUp)));
+                Equal(0, Field(form, "activeSheetIndex"));
+                Equal(true, Call(grid, "ProcessDataGridViewKey",
+                    new KeyEventArgs(Keys.Shift | Keys.F11)));
+                Equal(2, Field(form, "activeSheetIndex"));
+                Call(form, "SwitchSheet", 0);
+                Console.WriteLine("Sheet navigation and insert shortcuts passed.");
                 Call(form, "SelectRectangle", new Rectangle(1, 0, 1, 1), 1, 0, false);
                 formulaBar.Text = "saved from formula bar";
                 Call(form, "SaveActiveSheet");
